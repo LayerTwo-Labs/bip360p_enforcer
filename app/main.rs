@@ -10,11 +10,9 @@ use bip300301_enforcer_lib::{
     block_producer::BlockProducer,
     cli::{self, WalletSyncSource},
     errors::ErrorChain,
-    p2p::compute_signet_magic,
     proto::{
         crypto_service::{CRYPTO_SERVICE_SERVICE_NAME, CryptoServiceExt},
         mainchain_service::{
-            BLOCK_PRODUCER_SERVICE_SERVICE_NAME, BlockProducerServiceExt,
             MINING_SERVICE_SERVICE_NAME, MiningServiceExt, VALIDATOR_SERVICE_SERVICE_NAME,
             ValidatorServiceExt, WALLET_SERVICE_SERVICE_NAME, WalletServiceExt,
         },
@@ -377,11 +375,8 @@ async fn fill_connect_get_defaults(
 /// Which of the optional Connect services to register, alongside the ones that
 /// are always served
 struct ConnectServices {
-    /// Backs both `BlockProducerService` and `MiningService`
+    /// Backs `MiningService`
     producer: BlockProducer,
-
-    /// Register `BlockProducerService`
-    block_producer: bool,
 
     /// Register `MiningService`
     mining: bool,
@@ -405,13 +400,6 @@ async fn run_connect_server(
         vec![CRYPTO_SERVICE_SERVICE_NAME, VALIDATOR_SERVICE_SERVICE_NAME];
 
     let producer = Arc::new(services.producer);
-    let router = if services.block_producer {
-        service_names.push(BLOCK_PRODUCER_SERVICE_SERVICE_NAME);
-        BlockProducerServiceExt::register(Arc::clone(&producer), router)
-    } else {
-        router
-    };
-
     let router = if services.mining {
         service_names.push(MINING_SERVICE_SERVICE_NAME);
         MiningServiceExt::register(producer, router)
@@ -1362,7 +1350,6 @@ async fn main() -> Result<()> {
         .transpose()?;
 
     let producer = BlockProducer::new(
-        &wallet_data_dir,
         validator.clone(),
         mainchain_client.clone(),
         cli.clone(),
@@ -1373,8 +1360,6 @@ async fn main() -> Result<()> {
         info.chain,
         bitcoin::Network::Regtest | bitcoin::Network::Signet
     );
-    let block_producer_enabled = cli.enable_wallet || cli.enable_block_template_server;
-
     // Shares the `Arc` inner with the copy the wallet takes ownership of below,
     // so the policy DB and the mining semaphore are the same either way.
     let rpc_producer = producer.clone();
@@ -1400,18 +1385,8 @@ async fn main() -> Result<()> {
             return Err(TxindexNotEnabled.into());
         }
 
-        let magic = signet_challenge
-            .as_deref()
-            .map(compute_signet_magic)
-            .unwrap_or_else(|| info.chain.magic());
-        let wallet = Wallet::new(
-            &wallet_data_dir,
-            &cli,
-            mainchain_client.clone(),
-            producer,
-            magic,
-        )
-        .await?;
+        let wallet =
+            Wallet::new(&wallet_data_dir, &cli, mainchain_client.clone(), producer).await?;
 
         let (mnemonic, auto_create) = match (
             cli.wallet_opts.mnemonic_path.clone(),
@@ -1570,7 +1545,6 @@ async fn main() -> Result<()> {
         let validator = enforcer_validator(&enforcer).clone();
         let services = ConnectServices {
             producer: rpc_producer,
-            block_producer: block_producer_enabled,
             mining: mining_enabled,
             wallet: enforcer_wallet(&enforcer).cloned(),
         };

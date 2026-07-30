@@ -25,17 +25,9 @@ message WalletTransaction {
 }
 
 service WalletService {
-  rpc BroadcastWithdrawalBundle(BroadcastWithdrawalBundleRequest) returns (BroadcastWithdrawalBundleResponse) {
-    option idempotency_level = IDEMPOTENT;
-  }
-  rpc CreateBmmCriticalDataTransaction(CreateBmmCriticalDataTransactionRequest) returns (CreateBmmCriticalDataTransactionResponse);
-  rpc CreateDepositTransaction(CreateDepositTransactionRequest) returns (CreateDepositTransactionResponse);
   rpc CreateNewAddress(CreateNewAddressRequest) returns (CreateNewAddressResponse);
   rpc CreateWallet(CreateWalletRequest) returns (CreateWalletResponse);
   rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  rpc ListSidechainDepositTransactions(ListSidechainDepositTransactionsRequest) returns (ListSidechainDepositTransactionsResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse) {
@@ -51,42 +43,6 @@ service WalletService {
   rpc UnlockWallet(UnlockWalletRequest) returns (UnlockWalletResponse) {
     option idempotency_level = IDEMPOTENT;
   }
-}
-
-message BroadcastWithdrawalBundleRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
-  google.protobuf.BytesValue transaction = 2;
-}
-message BroadcastWithdrawalBundleResponse {}
-
-message CreateBmmCriticalDataTransactionRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
-  google.protobuf.UInt64Value value_sats = 2;
-  google.protobuf.UInt32Value height = 3;
-  cusf.common.v1.ConsensusHex critical_hash = 4;
-  cusf.common.v1.ReverseHex prev_bytes = 5;
-}
-message CreateBmmCriticalDataTransactionResponse {
-  cusf.common.v1.ReverseHex txid = 1;
-}
-
-message CreateDepositTransactionRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
-  // Addresses are encoded in UTF8.
-  // *Sidechain deposit addresses* (not sidechain addresses) are typically
-  // formatted as `s<SLOT_NUMBER>_<ADDRESS>_<CHECKSUM>`,
-  // where `CHECKSUM` is a hex encoding of the first 6 bytes of the SHA256
-  // hash of `s<SLOT_NUMBER>_<ADDRESS>`.
-  // protolint:disable:next MAX_LINE_LENGTH
-  // https://github.com/LayerTwo-Labs/testchain-deprecated/blob/4b7bae3e1218e058f59a43caf6ccac2a4e9a91f6/src/sidechain.cpp#L219
-  // The address used here is a sidechain address, the middle component of a
-  // sidechain deposit address.
-  google.protobuf.StringValue address = 2;
-  google.protobuf.UInt64Value value_sats = 3;
-  google.protobuf.UInt64Value fee_sats = 4;
-}
-message CreateDepositTransactionResponse {
-  cusf.common.v1.ReverseHex txid = 1;
 }
 
 message CreateNewAddressRequest {}
@@ -115,15 +71,6 @@ message GetBalanceResponse {
 
   // Whether the wallet has completed its initial sync.
   bool has_synced = 3;
-}
-
-message ListSidechainDepositTransactionsRequest {}
-message ListSidechainDepositTransactionsResponse {
-  message SidechainDepositTransaction {
-    google.protobuf.UInt32Value sidechain_number = 1;
-    WalletTransaction tx = 2;
-  }
-  repeated SidechainDepositTransaction transactions = 1;
 }
 
 message ListTransactionsRequest {}

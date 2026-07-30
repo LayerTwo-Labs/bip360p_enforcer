@@ -16,19 +16,13 @@ use bdk_wallet::{
     self, KeychainKind,
     keys::{DerivableKey as _, ExtendedKey, bip39::Mnemonic},
 };
-use bitcoin::{
-    Amount, BlockHash, Network, Transaction, Txid,
-    hashes::{Hash as _, HashEngine, sha256, sha256d},
-    script::PushBytesBuf,
-};
+use bitcoin::{Amount, BlockHash, Network, Transaction, hashes::Hash as _, script::PushBytesBuf};
 use bitcoin_jsonrpsee::{
     client::{GetRawTransactionClient, GetRawTransactionVerbose, MainClient as _},
     jsonrpsee::http_client::HttpClient,
 };
 use either::Either;
-use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
-use futures::{FutureExt, TryFutureExt, TryStreamExt};
-use serde::{Deserialize, Serialize};
+use futures::{FutureExt, TryFutureExt};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -39,12 +33,9 @@ use crate::{
     cli::{Config, WalletConfig, WalletSyncSource},
     convert,
     errors::ErrorChain,
-    messages::{self, M8BmmRequest},
-    types::{
-        BDKWalletTransaction, BlindedM6, BmmCommitment, Ctip, M6id, SidechainNumber,
-        SidechainProposal,
-    },
-    validator::{self, Validator},
+    messages,
+    types::BDKWalletTransaction,
+    validator::Validator,
     wallet::{
         error::WalletInitialization,
         mnemonic::{EncryptedMnemonic, new_mnemonic},
@@ -98,7 +89,6 @@ const fn default_electrum_host_port(network: Network) -> Option<(&'static str, u
 struct WalletInner {
     main_client: HttpClient,
     producer: BlockProducer,
-    magic: bitcoin::p2p::Magic,
     // Unlocked, ready-to-go wallet: Some
     // Locked wallet: None
     bitcoin_wallet: async_lock::RwLock<Option<BdkWallet>>,
@@ -110,18 +100,11 @@ struct WalletInner {
     seed_store: SeedStore,
     chain_source_client: Option<ChainSourceClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
-    config: Config,
 }
 
 impl WalletInner {
     fn validator(&self) -> &Validator {
         self.producer.validator()
-    }
-
-    /// The drivechain policy DB, owned by the producer. Policy only — the
-    /// wallet's seed lives in its own [`SeedStore`], not in here.
-    fn db(&self) -> &crate::block_producer::Db {
-        self.producer.db()
     }
 }
 
@@ -283,7 +266,6 @@ impl WalletInner {
         config: &Config,
         main_client: HttpClient,
         producer: BlockProducer,
-        magic: bitcoin::p2p::Magic,
     ) -> Result<Self, error::InitWallet> {
         let network = {
             let validator_network = producer.validator().network();
@@ -338,10 +320,8 @@ impl WalletInner {
         );
 
         Ok(Self {
-            config: config.clone(),
             main_client,
             producer,
-            magic,
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             seed_store,
@@ -536,16 +516,6 @@ impl WalletInner {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SidechainDepositTransaction {
-    pub sidechain_number: SidechainNumber,
-    pub deposit_amount: Amount,
-    #[serde(with = "hex::serde")]
-    pub destination_address: Vec<u8>,
-    pub wallet_tx: BDKWalletTransaction,
-}
-
-/// Optional parameters for sending a wallet transaction
 #[derive(Debug, Default)]
 pub struct CreateTransactionParams {
     /// Optional fee policy to use for the transaction
@@ -583,68 +553,14 @@ impl Wallet {
         config: &Config,
         main_client: HttpClient,
         producer: BlockProducer,
-        magic: bitcoin::p2p::Magic,
     ) -> Result<Self, error::InitWallet> {
-        let inner =
-            Arc::new(WalletInner::new(data_dir, config, main_client, producer, magic).await?);
+        let inner = Arc::new(WalletInner::new(data_dir, config, main_client, producer).await?);
         Ok(Self { inner })
     }
 
     /// The keyless block producer underneath this wallet.
     pub fn producer(&self) -> &BlockProducer {
         &self.inner.producer
-    }
-
-    pub async fn propose_sidechain(
-        &self,
-        proposal: &SidechainProposal,
-    ) -> Result<(), rusqlite::Error> {
-        self.inner.db().propose_sidechain(proposal).await
-    }
-
-    pub async fn ack_sidechain(
-        &self,
-        sidechain_number: SidechainNumber,
-        data_hash: sha256d::Hash,
-    ) -> Result<(), rusqlite::Error> {
-        self.inner
-            .db()
-            .ack_sidechain(sidechain_number, data_hash)
-            .await
-    }
-
-    pub async fn nack_sidechain(
-        &self,
-        sidechain_number: u8,
-        data_hash: &[u8; 32],
-    ) -> Result<(), rusqlite::Error> {
-        self.inner
-            .db()
-            .nack_sidechain(sidechain_number, data_hash)
-            .await
-    }
-
-    pub async fn put_withdrawal_bundle(
-        &self,
-        sidechain_number: SidechainNumber,
-        blinded_m6: &BlindedM6<'static>,
-    ) -> Result<M6id, rusqlite::Error> {
-        self.inner
-            .db()
-            .put_withdrawal_bundle(sidechain_number, blinded_m6)
-            .await
-    }
-
-    async fn insert_new_bmm_request(
-        &self,
-        sidechain_number: SidechainNumber,
-        prev_blockhash: bdk_wallet::bitcoin::BlockHash,
-        side_block_hash: BmmCommitment,
-    ) -> Result<bool, rusqlite::Error> {
-        self.inner
-            .db()
-            .insert_new_bmm_request(sidechain_number, prev_blockhash, side_block_hash)
-            .await
     }
 
     pub async fn sync_task(&self, cancel: CancellationToken) -> Result<(), miette::Report> {
@@ -719,22 +635,6 @@ impl Wallet {
         self.inner.validator()
     }
 
-    fn create_deposit_op_drivechain_output(
-        sidechain_number: SidechainNumber,
-        sidechain_ctip_amount: Amount,
-        value: Amount,
-    ) -> Result<bdk_wallet::bitcoin::TxOut, crate::types::AmountOverflowError> {
-        let deposit_txout =
-            messages::create_m5_deposit_output(sidechain_number, sidechain_ctip_amount, value)?;
-
-        Ok(bdk_wallet::bitcoin::TxOut {
-            script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
-                deposit_txout.script_pubkey.to_bytes(),
-            ),
-            value: deposit_txout.value,
-        })
-    }
-
     fn create_op_return_output<Msg>(
         msg: Msg,
     ) -> Result<bdk_wallet::bitcoin::TxOut, <bitcoin::script::PushBytesBuf as TryFrom<Msg>>::Error>
@@ -750,373 +650,6 @@ impl Wallet {
         })
     }
 
-    async fn fetch_transaction(
-        &self,
-        txid: Txid,
-    ) -> Result<bdk_wallet::bitcoin::Transaction, error::FetchTransaction> {
-        let block_hash = None;
-
-        let transaction_hex = self
-            .inner
-            .main_client
-            .get_raw_transaction(txid, GetRawTransactionVerbose::<false>, block_hash)
-            .await
-            .map_err(|err| error::BitcoinCoreRPC {
-                method: "getrawtransaction".to_string(),
-                error: err,
-            })?;
-
-        let transaction =
-            bitcoin::consensus::encode::deserialize_hex::<Transaction>(&transaction_hex)?;
-
-        convert::bitcoin_tx_to_bdk_tx(transaction).map_err(error::FetchTransaction::Convert)
-    }
-
-    /// [`bdk_wallet::TxOrdering`] for deposit txs
-    fn deposit_txordering(
-        sidechain_addrs: HashMap<Vec<u8>, SidechainNumber>,
-    ) -> bdk_wallet::TxOrdering {
-        use std::cmp::Ordering;
-
-        use bitcoin::hashes::{Hash, Hmac, HmacEngine};
-        let hmac_engine = || {
-            let key = {
-                use rand::Rng;
-                let mut bytes = vec![0u8; <sha256::Hash as Hash>::Engine::BLOCK_SIZE];
-                rand::rng().fill_bytes(&mut bytes);
-                bytes
-            };
-            HmacEngine::<sha256::Hash>::new(&key)
-        };
-        fn hmac_sha256<T>(mut engine: HmacEngine<sha256::Hash>, value: &T) -> Hmac<sha256::Hash>
-        where
-            T: bitcoin::consensus::Encodable,
-        {
-            value
-                .consensus_encode(&mut engine)
-                .expect("should encode correctly");
-            Hmac::<sha256::Hash>::from_engine(engine)
-        }
-        let input_sort = {
-            let hmac_engine = hmac_engine();
-            move |txin_l: &bdk_wallet::bitcoin::TxIn, txin_r: &bdk_wallet::bitcoin::TxIn| {
-                let txin_l_hmac = hmac_sha256(hmac_engine.clone(), txin_l);
-                let txin_r_hmac = hmac_sha256(hmac_engine.clone(), txin_r);
-                txin_l_hmac.cmp(&txin_r_hmac)
-            }
-        };
-        enum TxOutKind {
-            OpDrivechain(SidechainNumber),
-            OpReturnAddress(SidechainNumber),
-            Other,
-        }
-        // classify as an op_drivechain output or an
-        // op_return address
-        fn classify_txout(
-            sidechain_addrs: &HashMap<Vec<u8>, SidechainNumber>,
-            txout: &bdk_wallet::bitcoin::TxOut,
-        ) -> TxOutKind {
-            if let Ok((_, sidechain_id)) =
-                crate::messages::parse_op_drivechain(txout.script_pubkey.as_bytes())
-            {
-                return TxOutKind::OpDrivechain(sidechain_id);
-            }
-            if let Some(address) =
-                crate::messages::try_parse_op_return_address(&txout.script_pubkey)
-                && let Some(sidechain_id) = sidechain_addrs.get(&address)
-            {
-                return TxOutKind::OpReturnAddress(*sidechain_id);
-            }
-            TxOutKind::Other
-        }
-        let output_sort = {
-            let hmac_engine = hmac_engine();
-            move |txout_l: &bdk_wallet::bitcoin::TxOut, txout_r: &bdk_wallet::bitcoin::TxOut| match (
-                classify_txout(&sidechain_addrs, txout_l),
-                classify_txout(&sidechain_addrs, txout_r),
-            ) {
-                (TxOutKind::OpDrivechain(_) | TxOutKind::OpReturnAddress(_), TxOutKind::Other) => {
-                    Ordering::Less
-                }
-                (TxOutKind::Other, TxOutKind::OpDrivechain(_) | TxOutKind::OpReturnAddress(_)) => {
-                    Ordering::Greater
-                }
-                (
-                    TxOutKind::OpDrivechain(sidechain_id_l),
-                    TxOutKind::OpDrivechain(sidechain_id_r),
-                )
-                | (
-                    TxOutKind::OpReturnAddress(sidechain_id_l),
-                    TxOutKind::OpReturnAddress(sidechain_id_r),
-                ) => sidechain_id_l.cmp(&sidechain_id_r),
-                (
-                    TxOutKind::OpDrivechain(sidechain_id_l),
-                    TxOutKind::OpReturnAddress(sidechain_id_r),
-                ) => match sidechain_id_l.cmp(&sidechain_id_r) {
-                    Ordering::Equal => Ordering::Less,
-                    ordering => ordering,
-                },
-                (
-                    TxOutKind::OpReturnAddress(sidechain_id_l),
-                    TxOutKind::OpDrivechain(sidechain_id_r),
-                ) => match sidechain_id_l.cmp(&sidechain_id_r) {
-                    Ordering::Equal => Ordering::Greater,
-                    ordering => ordering,
-                },
-                (TxOutKind::Other, TxOutKind::Other) => {
-                    let txout_l_hmac = hmac_sha256(hmac_engine.clone(), txout_l);
-                    let txout_r_hmac = hmac_sha256(hmac_engine.clone(), txout_r);
-                    txout_l_hmac.cmp(&txout_r_hmac)
-                }
-            }
-        };
-        bdk_wallet::TxOrdering::Custom {
-            input_sort: Arc::new(input_sort),
-            output_sort: Arc::new(output_sort),
-        }
-    }
-
-    async fn create_deposit_psbt(
-        &self,
-        op_drivechain_output: bdk_wallet::bitcoin::TxOut,
-        sidechain_address_data: bdk_wallet::bitcoin::script::PushBytesBuf,
-        sidechain_ctip: Option<&Ctip>,
-        fee: Option<Amount>,
-    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::CreateDepositPsbt> {
-        let sidechain_number = match crate::messages::parse_op_drivechain(
-            op_drivechain_output.script_pubkey.as_bytes(),
-        ) {
-            Ok((_, sidechain_number)) => sidechain_number,
-            Err(_) => return Err(error::CreateDepositPsbt::ParseSidechainNumber),
-        };
-        // If the sidechain has a Ctip (i.e. treasury UTXO), the BIP300 rules mandate that we spend the previous
-        // Ctip.
-        let ctip_foreign_utxo = match sidechain_ctip {
-            Some(sidechain_ctip) => {
-                let outpoint = bdk_wallet::bitcoin::OutPoint {
-                    txid: convert::bitcoin_txid_to_bdk_txid(sidechain_ctip.outpoint.txid),
-                    vout: sidechain_ctip.outpoint.vout,
-                };
-
-                let ctip_transaction =
-                    self.fetch_transaction(sidechain_ctip.outpoint.txid)
-                        .await
-                        .map_err(|err| error::CreateDepositPsbt::FetchTransaction {
-                            txid: sidechain_ctip.outpoint.txid,
-                            source: err,
-                        })?;
-
-                let psbt_input = bdk_wallet::bitcoin::psbt::Input {
-                    non_witness_utxo: Some(ctip_transaction),
-                    final_script_sig: Some(bitcoin::ScriptBuf::new()),
-                    ..bdk_wallet::bitcoin::psbt::Input::default()
-                };
-
-                Some((psbt_input, outpoint))
-            }
-            None => None,
-        };
-
-        let psbt = {
-            let mut wallet_write = self.inner.write_wallet().await?;
-            tokio::task::block_in_place(|| {
-                wallet_write.with_mut(|wallet| {
-                    let mut builder = wallet.build_tx();
-                    builder
-                        // important: the M5 OP_DRIVECHAIN output must come directly before the OP_RETURN sidechain address output.
-                        .add_recipient(
-                            op_drivechain_output.script_pubkey,
-                            op_drivechain_output.value,
-                        )
-                        .add_data(&sidechain_address_data);
-
-                    if let Some(fee) = fee {
-                        builder.fee_absolute(fee);
-                    }
-
-                    if let Some((ctip_psbt_input, outpoint)) = ctip_foreign_utxo {
-                        // This might be wrong. Seems to work!
-                        let satisfaction_weight = bdk_wallet::bitcoin::Weight::ZERO;
-
-                        builder.add_foreign_utxo(outpoint, ctip_psbt_input, satisfaction_weight)?;
-                    }
-
-                    builder.ordering(Self::deposit_txordering(
-                        [(
-                            sidechain_address_data.as_bytes().to_owned(),
-                            sidechain_number,
-                        )]
-                        .into_iter()
-                        .collect(),
-                    ));
-
-                    builder.finish().map_err(error::CreateDepositPsbt::CreateTx)
-                })
-            })?
-        };
-        Ok(psbt)
-    }
-
-    fn p2p_broadcast_addrs(&self) -> Box<dyn Iterator<Item = crate::p2p::BroadcastAddr> + '_> {
-        let network = self.inner.validator().network();
-        let magic = self.inner.magic;
-        let p2p_broadcast_addrs = self.inner.config.p2p_broadcast_addr.iter().cloned();
-        match crate::p2p::default_p2p_broadcast_addr(network, magic.to_bytes()) {
-            Some(default_addr) => {
-                if magic.to_bytes() == crate::p2p::SIGNET_MAGIC_BYTES {
-                    tracing::debug!(
-                        "Using default P2P broadcast address for signet: {default_addr:?}"
-                    );
-                    let res = std::iter::once(default_addr.into()).chain(p2p_broadcast_addrs);
-                    Box::new(res)
-                } else {
-                    tracing::debug!(
-                        %network,
-                        %magic,
-                        "No default P2P broadcast addresses for signet with non-matching magic",
-                    );
-                    Box::new(p2p_broadcast_addrs)
-                }
-            }
-            None => {
-                tracing::debug!(
-                    %network,
-                    "No default P2P broadcast addresses for network",
-                );
-                Box::new(p2p_broadcast_addrs)
-            }
-        }
-    }
-
-    /// Creates a deposit transaction, persists it to the database, and returns the TXID.
-    /// This is also known as a M5 message, in BIP300 nomenclature.
-    ///
-    /// https://github.com/bitcoin/bips/blob/master/bip-0300.mediawiki#m5----deposit-btc-from-l1-to-l2
-    pub async fn create_deposit(
-        &self,
-        sidechain_number: SidechainNumber,
-        sidechain_address: String,
-        value: Amount,
-        fee: Option<Amount>,
-    ) -> Result<bitcoin::Txid, error::CreateDeposit> {
-        let block_height = self
-            .inner
-            .validator()
-            .try_get_block_height()?
-            .unwrap_or_default();
-        // If this is None, there's been no deposit to this sidechain yet. We're the first one!
-        let sidechain_ctip = self.inner.validator().try_get_ctip(sidechain_number)?;
-        let sidechain_ctip = sidechain_ctip.as_ref();
-        let sidechain_ctip_amount = sidechain_ctip
-            .map(|ctip| ctip.value)
-            .unwrap_or(Amount::ZERO);
-        let op_drivechain_output = Self::create_deposit_op_drivechain_output(
-            sidechain_number,
-            sidechain_ctip_amount,
-            value,
-        )?;
-        tracing::debug!(
-            value = %op_drivechain_output.value,
-            spk = %op_drivechain_output.script_pubkey.to_asm_string(),
-            "Created OP_DRIVECHAIN output",
-        );
-        let sidechain_address_data =
-            bdk_wallet::bitcoin::script::PushBytesBuf::try_from(sidechain_address.into_bytes())
-                .map_err(error::CreateDeposit::ConvertSidechainAddress)?;
-        let psbt = self
-            .create_deposit_psbt(
-                op_drivechain_output,
-                sidechain_address_data,
-                sidechain_ctip,
-                fee,
-            )
-            .await?;
-        tracing::debug!("Created deposit PSBT: {psbt}");
-        let tx = self.sign_transaction(psbt).await?;
-        let txid = tx.compute_txid();
-        tracing::info!(%txid, "Signed deposit transaction");
-        tracing::debug!("Serialized deposit transaction: {}", {
-            let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
-            hex::encode(tx_bytes)
-        });
-        tracing::debug!(%txid, "Attempting to broadcast deposit transaction via RPC...");
-        let mut broadcast_successfully: bool =
-            crate::rpc_client::broadcast_transaction(&self.inner.main_client, &tx)
-                .await
-                .map_err(error::CreateDeposit::BroadcastTx)?
-                .is_some();
-
-        if self.p2p_broadcast_addrs().count() > 0 {
-            tracing::debug!(%txid, "Attempting to broadcast deposit transaction via P2P to {} peer(s)...", self.p2p_broadcast_addrs().count());
-        } else {
-            tracing::warn!(%txid, "No P2P peers configured, skipping P2P attempt of failed deposit transaction broadcast");
-        }
-
-        let mut broadcast_results_stream = self
-            .p2p_broadcast_addrs()
-            .map(|peer_addr| {
-                crate::p2p::broadcast_nonstandard_tx(
-                    peer_addr.clone(),
-                    block_height as i32,
-                    self.inner.magic,
-                    tx.clone(),
-                )
-                .map_ok({
-                    let peer_addr = peer_addr.clone();
-                    move |result| (peer_addr, result)
-                })
-                .map_err(move |source| {
-                    error::CreateDeposit::BroadcastNonstandardTx { peer_addr, source }
-                })
-            })
-            .collect::<futures::stream::FuturesUnordered<_>>();
-        while let Some((peer_addr, broadcast_success)) = broadcast_results_stream.try_next().await?
-        {
-            tracing::debug!(%txid, "Broadcast deposit transaction via P2P to {peer_addr} successfully: {broadcast_success}");
-            broadcast_successfully |= broadcast_success
-        }
-        if broadcast_successfully {
-            tracing::info!(%txid, "Broadcast deposit transaction successfully");
-
-            // Apply the unconfirmed deposit to the wallet so its funding input
-            // is marked spent. Otherwise a deposit created before this tx
-            // confirms can reselect the same UTXO, which Bitcoin Core rejects
-            // as an RBF replacement. Mirrors `send_wallet_transaction`.
-            let last_seen = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            let applied_changes = {
-                // Lock order: wallet before `bdk_db`, see the `bdk_db` field
-                // docs
-                let mut wallet_write = self.inner.write_wallet().await?;
-                let mut bdk_db_lock = self.inner.bdk_db.lock().await;
-                wallet_write
-                    .with_mut(|wallet| {
-                        wallet.apply_unconfirmed_txs(vec![(tx, last_seen.as_secs())]);
-                        wallet.persist_async(&mut bdk_db_lock)
-                    })
-                    .await?
-            };
-            if applied_changes {
-                tracing::debug!(%txid, "Applied unconfirmed deposit transaction to wallet");
-            } else {
-                // A deposit can be funded entirely by the sidechain's CTIP
-                // foreign UTXO, with no wallet-owned input or change, in which
-                // case there is nothing for the wallet to track.
-                tracing::warn!(
-                    %txid,
-                    "No wallet changes after applying unconfirmed deposit transaction",
-                );
-            }
-
-            Ok(convert::bdk_txid_to_bitcoin_txid(txid))
-        } else {
-            Err(error::CreateDeposit::BroadcastUnsuccessful { txid })
-        }
-    }
-
-    #[instrument(skip_all)]
-    /// Returns the balance of the wallet, alongside a bool indicating whether the wallet is synced.
     pub async fn get_wallet_balance(
         &self,
     ) -> Result<(bdk_wallet::Balance, bool), error::GetWalletBalance> {
@@ -1283,94 +816,6 @@ impl Wallet {
             (_, _) => a.txid.cmp(&b.txid),
         });
         Ok(txs)
-    }
-
-    pub async fn list_sidechain_deposit_transactions(
-        &self,
-    ) -> Result<Vec<SidechainDepositTransaction>, error::ListSidechainDepositTransactions> {
-        self.list_wallet_transactions()
-            .await?
-            .into_iter()
-            .map(Ok::<_, error::ListSidechainDepositTransactions>)
-            .transpose_into_fallible()
-            .filter_map(|bdk_wallet_tx| {
-                let Some(treasury_output) = bdk_wallet_tx.tx.output.first() else {
-                    return Ok(None);
-                };
-                let Ok((_, sidechain_number)) =
-                    crate::messages::parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
-                else {
-                    return Ok(None);
-                };
-                let treasury_outpoint = bitcoin::OutPoint {
-                    txid: bdk_wallet_tx.txid,
-                    vout: 0,
-                };
-                let spent_ctip = match self
-                    .validator()
-                    .try_get_ctip_value_seq(&treasury_outpoint)?
-                {
-                    // `seq == 0` is the sidechain's first deposit, which created
-                    // the first treasury UTXO, so there is no previous spent ctip.
-                    Some((_, _, seq)) => match seq.checked_sub(1) {
-                        Some(prev_seq) => {
-                            let spent_treasury_utxo = self
-                                .validator()
-                                .get_treasury_utxo(sidechain_number, prev_seq)?;
-                            Some(crate::types::Ctip {
-                                outpoint: spent_treasury_utxo.outpoint,
-                                value: spent_treasury_utxo.total_value,
-                            })
-                        }
-                        None => None,
-                    },
-                    None => {
-                        // May be unconfirmed
-                        // check if current ctip in inputs
-                        match self.validator().try_get_ctip(sidechain_number)? {
-                            Some(ctip) => {
-                                if bdk_wallet_tx.tx.input.iter().any(|txin: &bitcoin::TxIn| {
-                                    txin.previous_output == ctip.outpoint
-                                }) {
-                                    Some(ctip)
-                                } else {
-                                    return Ok(None);
-                                }
-                            }
-                            None => None,
-                        }
-                    }
-                };
-                if let Some(spent_ctip) = spent_ctip
-                    && spent_ctip.value > treasury_output.value
-                {
-                    return Ok(None);
-                }
-                let deposit_amount = if let Some(spent_ctip) = spent_ctip {
-                    match treasury_output.value.checked_sub(spent_ctip.value) {
-                        Some(deposit_amount) => deposit_amount,
-                        None => return Ok(None),
-                    }
-                } else {
-                    treasury_output.value
-                };
-                let Some(destination_address_output) = bdk_wallet_tx.tx.output.get(1) else {
-                    return Ok(None);
-                };
-                let Some(destination_address) = crate::messages::try_parse_op_return_address(
-                    &destination_address_output.script_pubkey,
-                ) else {
-                    return Ok(None);
-                };
-                let deposit_tx = SidechainDepositTransaction {
-                    sidechain_number,
-                    deposit_amount,
-                    destination_address,
-                    wallet_tx: bdk_wallet_tx,
-                };
-                Ok(Some(deposit_tx))
-            })
-            .collect()
     }
 
     async fn create_send_psbt(
@@ -1553,40 +998,6 @@ impl Wallet {
         Ok(utxos)
     }
 
-    #[expect(dead_code)]
-    async fn get_sidechain_ctip(
-        &self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<Option<(bitcoin::OutPoint, Amount, u64)>, miette::Report> {
-        let ctip = self.inner.validator().try_get_ctip(sidechain_number)?;
-
-        let sequence_number = self
-            .inner
-            .validator()
-            .get_ctip_sequence_number(sidechain_number)?
-            .unwrap();
-
-        if let Some(ctip) = ctip {
-            let value = ctip.value;
-            Ok(Some((ctip.outpoint, value, sequence_number)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn is_sidechain_active(
-        &self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<bool, validator::GetSidechainsError> {
-        let sidechains = self.inner.validator().get_active_sidechains()?;
-        let active = sidechains
-            .iter()
-            .any(|sc| sc.proposal.sidechain_number == sidechain_number);
-
-        Ok(active)
-    }
-
-    #[instrument(skip_all, err)]
     async fn sign_transaction(
         &self,
         mut psbt: bdk_wallet::bitcoin::psbt::Psbt,
@@ -1613,160 +1024,6 @@ impl Wallet {
 
         tracing::debug!("Extracted transaction in {:?}", timestamp.elapsed());
         Ok(tx)
-    }
-
-    fn bmm_request_message(
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-    ) -> Result<bdk_wallet::bitcoin::ScriptBuf, bitcoin::script::PushBytesError> {
-        M8BmmRequest::script_pubkey(
-            sidechain_number,
-            sidechain_block_hash,
-            prev_mainchain_block_hash,
-        )
-    }
-
-    async fn build_bmm_tx(
-        &self,
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
-    ) -> Result<bdk_wallet::bitcoin::psbt::Psbt, error::BuildBmmTx> {
-        tracing::trace!("build_bmm_tx: constructing request message");
-        // https://github.com/LayerTwo-Labs/bip300_bip301_specifications/blob/master/bip301.md#m8-bmm-request
-        let message = Self::bmm_request_message(
-            sidechain_number,
-            prev_mainchain_block_hash,
-            sidechain_block_hash,
-        )?;
-
-        let psbt = {
-            tracing::trace!("build_bmm_tx: acquiring wallet write lock");
-            let mut wallet_write = self.inner.write_wallet().await?;
-            tokio::task::block_in_place(|| {
-                wallet_write.with_mut(|wallet| {
-                    tracing::trace!("build_bmm_tx: creating transaction builder");
-                    let mut builder = wallet.build_tx();
-                    // OP_RETURN message MUST be first output
-                    builder.ordering(bdk_wallet::TxOrdering::Untouched);
-
-                    tracing::trace!("build_bmm_tx: adding locktime {locktime}");
-                    builder.nlocktime(locktime);
-
-                    tracing::trace!("build_bmm_tx: adding recipient");
-                    builder.add_recipient(message, bid_amount);
-
-                    tracing::trace!("build_bmm_tx: finishing transaction builder");
-                    let res = builder.finish();
-
-                    tracing::trace!("build_bmm_tx: built transaction");
-
-                    res
-                })
-            })?
-        };
-
-        Ok(psbt)
-    }
-
-    /// Creates a BMM request transaction. Broadcasts via the p2p whitelist,
-    /// and via RPC to our own node (tolerating rejection due to non-standardness).
-    /// Returns `Some(tx)` if the BMM request was stored, `None` if the BMM
-    /// request was not stored due to pre-existing request with the same
-    /// `sidechain_number` and `prev_mainchain_block_hash`.
-    pub async fn create_bmm_request(
-        &self,
-        sidechain_number: SidechainNumber,
-        prev_mainchain_block_hash: bdk_wallet::bitcoin::BlockHash,
-        sidechain_block_hash: BmmCommitment,
-        bid_amount: bdk_wallet::bitcoin::Amount,
-        locktime: bdk_wallet::bitcoin::absolute::LockTime,
-    ) -> Result<Option<bdk_wallet::bitcoin::Transaction>, error::CreateBmmRequest> {
-        tracing::debug!("create_bmm_request: building transaction");
-        let psbt = self
-            .build_bmm_tx(
-                sidechain_number,
-                prev_mainchain_block_hash,
-                sidechain_block_hash,
-                bid_amount,
-                locktime,
-            )
-            .await?;
-        let tx = self.sign_transaction(psbt).await?;
-        tracing::info!("BMM request: PSBT signed successfully");
-        let txid = tx.compute_txid();
-        let stored = self
-            .insert_new_bmm_request(
-                sidechain_number,
-                prev_mainchain_block_hash,
-                sidechain_block_hash,
-            )
-            .await?;
-        if stored {
-            tracing::info!("BMM request: inserted new bmm request into db");
-        } else {
-            tracing::warn!(
-                "BMM request: Ignored, request exists with same sidechain slot and previous block hash"
-            );
-        }
-        let block_height = self
-            .inner
-            .validator()
-            .get_header_info(&prev_mainchain_block_hash)?
-            .height;
-        tracing::debug!(%txid, "Broadcasting BMM request transaction...");
-        let mut broadcast_results_stream = self
-            .p2p_broadcast_addrs()
-            .map(|peer_addr| {
-                crate::p2p::broadcast_nonstandard_tx(
-                    peer_addr,
-                    block_height as i32,
-                    self.inner.magic,
-                    tx.clone(),
-                )
-                .map_err(error::CreateBmmRequestInner::BroadcastNonstandardTx)
-            })
-            .collect::<futures::stream::FuturesUnordered<_>>();
-        let mut broadcast_successfully = None;
-        while let Some(broadcast_success) = broadcast_results_stream.try_next().await? {
-            broadcast_successfully = match broadcast_successfully {
-                Some(broadcast_successfully) => Some(broadcast_successfully || broadcast_success),
-                None => Some(broadcast_success),
-            }
-        }
-        match broadcast_successfully {
-            Some(true) => {
-                tracing::info!(%txid, "Broadcast BMM request transaction successfully");
-            }
-            Some(false) => {
-                let err = error::CreateBmmRequestInner::BroadcastUnsuccessful { txid };
-                return Err(err.into());
-            }
-            None => {}
-        }
-        // Submit to our own node via RPC as well. This must happen after the
-        // p2p broadcast: if a peer received the tx via relay from our node
-        // first, the p2p broadcast to it would time out. Unpatched nodes may
-        // reject the BMM request as non-standard. That is tolerated.
-        tracing::debug!(%txid, "Broadcasting BMM request transaction to own node via RPC...");
-        match crate::rpc_client::broadcast_transaction_tolerate_mempool_rejection(
-            &self.inner.main_client,
-            &tx,
-        )
-        .await
-        .map_err(error::CreateBmmRequestInner::BroadcastTxRpc)?
-        {
-            Some(_) => {
-                tracing::info!(%txid, "Broadcast BMM request transaction via RPC to own node");
-            }
-            None => {
-                tracing::info!(%txid, "Own node rejected BMM request transaction from its mempool");
-            }
-        }
-        if stored { Ok(Some(tx)) } else { Ok(None) }
     }
 
     pub async fn get_wallet_info(&self) -> Result<WalletInfo, error::NotUnlocked> {

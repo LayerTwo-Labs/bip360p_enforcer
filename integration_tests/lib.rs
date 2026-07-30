@@ -9,7 +9,6 @@ pub mod block_verdict;
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
-mod test_activation_height;
 #[cfg(feature = "bip360")]
 mod test_bip360_blk_dat_e2e;
 #[cfg(feature = "bip360")]
@@ -32,17 +31,10 @@ mod test_bip360_tier_b_cusf_sidecar;
 mod test_bip360_tier_b_p2mr_mempool;
 #[cfg(feature = "bip360")]
 mod test_bip360_valid_spend;
-mod test_blinded_m6_roundtrip;
-mod test_consecutive_deposits;
 mod test_cusf_claims;
-mod test_drivechain_blk_dat_e2e;
 mod test_file_based_block_parser;
 mod test_generate_to_address;
-mod test_inactive_drivechain_output;
-mod test_invalid_block;
-mod test_peer_bmm_request;
 mod test_seed_migration;
-mod test_sidechain_ack_policy;
 mod test_unconfirmed_transactions;
 mod test_wallet_less_block_template;
 pub mod util;

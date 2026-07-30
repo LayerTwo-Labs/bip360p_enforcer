@@ -7,7 +7,6 @@
 //! |-------|--------|
 //! | `cusf_claim_testmempoolaccept_no_insert` | `testmempoolaccept` never inserts into `mapTx` |
 //! | `cusf_claim_stock_rejects_p2mr_spend` (bip360) | Stock Alice mempool rejects enforcer P2MR spends |
-//! | `cusf_claim_invalid_drivechain_block_invalidated` | Drivechain enforcer `invalidateblock` on bad M1 |
 
 use std::time::Duration;
 

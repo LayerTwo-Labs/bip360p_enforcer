@@ -8,8 +8,8 @@ use bip300301_enforcer_lib::{
         self, ToStatus,
         mainchain::{
             BlockHeaderInfo, GenerateToAddressRequest, GenerateToAddressResponse,
-            SetAckAllProposalsRequest, SubscribeEventsRequest, SubscribeEventsResponse,
-            subscribe_events_response, subscribe_events_response::event::ConnectBlock,
+            SubscribeEventsRequest, SubscribeEventsResponse, subscribe_events_response,
+            subscribe_events_response::event::ConnectBlock,
         },
     },
 };
@@ -19,7 +19,7 @@ use either::Either;
 use thiserror::Error;
 
 use crate::{
-    setup::{MiningMode, Network, PostSetup, Sidechain},
+    setup::{MiningMode, Network, PostSetup},
     util::VarError,
 };
 
@@ -146,10 +146,8 @@ pub enum MineSignetError {
     ValidatorClient(#[from] ConnectError),
 }
 
-fn subscribe_request<S: Sidechain>() -> SubscribeEventsRequest {
-    SubscribeEventsRequest {
-        sidechain_id: proto::wrap_u32(S::SIDECHAIN_NUMBER.0.into()),
-    }
+fn subscribe_request() -> SubscribeEventsRequest {
+    SubscribeEventsRequest::default()
 }
 
 fn proto_err_to_connect(err: proto::Error) -> ConnectError {
@@ -157,14 +155,13 @@ fn proto_err_to_connect(err: proto::Error) -> ConnectError {
 }
 
 // Mine blocks, running a check after each block
-pub async fn mine_signet_check<F, Err, S>(
+pub async fn mine_signet_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
     mut check: F,
 ) -> Result<(), Either<MineSignetError, Err>>
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
-    S: Sidechain,
 {
     use proto::mainchain::subscribe_events_response::event::Event;
     let signet_miner = post_setup
@@ -173,7 +170,7 @@ where
         .ok_or(either::Left(MineSignetError::NoSignetMiner))?;
     let mut stream = post_setup
         .validator_service_client
-        .subscribe_events(subscribe_request::<S>())
+        .subscribe_events(subscribe_request())
         .await
         .map_err(|err| Either::Left(err.into()))?;
     for _ in 0..blocks {
@@ -221,19 +218,18 @@ where
 }
 
 // Mine blocks, running a check after each block
-pub async fn mine_gbt_check<F, Err, S>(
+pub async fn mine_gbt_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
     mut check: F,
 ) -> Result<(), Either<MineGbtError, Err>>
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
-    S: Sidechain,
 {
     use proto::mainchain::subscribe_events_response::event::Event;
     let mut stream = post_setup
         .validator_service_client
-        .subscribe_events(subscribe_request::<S>())
+        .subscribe_events(subscribe_request())
         .await
         .map_err(|err| Either::Left(err.into()))?;
     for _ in 0..blocks {
@@ -277,25 +273,14 @@ where
 }
 
 // Mine blocks via `GenerateToAddress`, running a check after each block.
-// `GenerateToAddress` mines with the persisted ACK policy, so set it first to
-// mirror the requested per-call behavior.
 pub async fn mine_generateblocks_check<F, Err>(
     post_setup: &mut PostSetup,
     blocks: u32,
-    ack_all_proposals: Option<bool>,
     mut check: F,
 ) -> Result<(), Either<ConnectError, Err>>
 where
     F: FnMut(bitcoin::BlockHash) -> Result<(), Err>,
 {
-    let () = post_setup
-        .block_producer_service_client
-        .set_ack_all_proposals(SetAckAllProposalsRequest {
-            ack_all: ack_all_proposals.unwrap_or(false),
-        })
-        .await
-        .map(|_| ())
-        .map_err(Either::Left)?;
     let request = GenerateToAddressRequest {
         blocks: proto::wrap_u32(blocks),
         address: post_setup.mining_address.to_string(),
@@ -327,34 +312,25 @@ pub enum MineError {
     SignetGenerateBlocks,
 }
 
-pub async fn mine<S>(
-    post_setup: &mut PostSetup,
-    blocks: u32,
-    ack_all_proposals: Option<bool>,
-) -> Result<(), MineError>
-where
-    S: Sidechain,
-{
+pub async fn mine(post_setup: &mut PostSetup, blocks: u32) -> Result<(), MineError> {
     use std::convert::Infallible;
     match (post_setup.network, post_setup.mode.mining_mode()) {
         (Network::Regtest, MiningMode::GenerateBlocks) => {
-            mine_generateblocks_check(post_setup, blocks, ack_all_proposals, |_| {
-                Ok::<_, Infallible>(())
-            })
-            .await
-            .map_err(|err| match err {
-                Either::Left(err) => MineError::GenerateToAddress(err),
-            })
+            mine_generateblocks_check(post_setup, blocks, |_| Ok::<_, Infallible>(()))
+                .await
+                .map_err(|err| match err {
+                    Either::Left(err) => MineError::GenerateToAddress(err),
+                })
         }
         (Network::Regtest, MiningMode::GetBlockTemplate) => {
-            mine_gbt_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
+            mine_gbt_check::<_, Infallible>(post_setup, blocks, |_| Ok(()))
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MineError::Gbt(err),
                 })
         }
         (Network::Signet, MiningMode::GetBlockTemplate) => {
-            mine_signet_check::<_, Infallible, S>(post_setup, blocks, |_| Ok(()))
+            mine_signet_check::<_, Infallible>(post_setup, blocks, |_| Ok(()))
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MineError::Signet(err),
@@ -365,23 +341,21 @@ where
 }
 
 /// Mine blocks, and check the events for each block
-pub async fn mine_check_block_events<F, S>(
+pub async fn mine_check_block_events<F>(
     post_setup: &mut PostSetup,
     blocks: u32,
-    ack_all_proposals: Option<bool>,
     mut check: F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(u32, proto::mainchain::BlockInfo) -> anyhow::Result<()>,
-    S: Sidechain,
 {
     tracing::debug!("Mining {blocks} block(s)");
     let mut events = post_setup
         .validator_service_client
-        .subscribe_events(subscribe_request::<S>())
+        .subscribe_events(subscribe_request())
         .await?;
     for blocks_mined in 0..blocks {
-        let () = mine::<S>(post_setup, 1, ack_all_proposals).await?;
+        let () = mine(post_setup, 1).await?;
         let Some(view) = events.message().await? else {
             anyhow::bail!("Expected a block event")
         };

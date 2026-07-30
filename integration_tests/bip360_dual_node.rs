@@ -713,8 +713,7 @@ pub async fn assert_tx_accepted_by_both_peers(
 }
 
 async fn mine_one_block(miner: &mut PostSetup) -> anyhow::Result<()> {
-    use crate::setup::DummySidechain;
-    mine::mine_gbt_check::<_, std::convert::Infallible, DummySidechain>(miner, 1, |_| Ok(()))
+    mine::mine_gbt_check::<_, std::convert::Infallible>(miner, 1, |_| Ok(()))
         .await
         .map_err(|e| match e {
             either::Either::Left(err) => anyhow::anyhow!("mine_gbt failed: {err}"),

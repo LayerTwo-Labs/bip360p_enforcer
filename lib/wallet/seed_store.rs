@@ -305,6 +305,21 @@ fn read_legacy_seed(conn: &Connection) -> Result<Option<StoredSeed>, error::Init
 
 #[cfg(test)]
 mod tests {
+    /// The pre-split `db.sqlite` schema (drivechain policy tables + the legacy
+    /// `wallet_seeds` slot). Kept here verbatim so the seed-migration tests can
+    /// reproduce a legacy deployment without the deleted policy store.
+    const LEGACY_V7_SCHEMA: &str = "
+        CREATE TABLE wallet_seeds
+            (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             plaintext_mnemonic TEXT,
+             initialization_vector BLOB,
+             ciphertext_mnemonic BLOB,
+             key_salt BLOB,
+             needs_passphrase BOOLEAN NOT NULL DEFAULT FALSE,
+             creation_time DATETIME NOT NULL DEFAULT (DATETIME('now'))
+            );";
+
     use bdk_wallet::bip39::{Language, Mnemonic};
 
     use super::{Seed, SeedStore, error};
@@ -473,14 +488,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Fresh deployments: the producer creates `db.sqlite` (and immediately
-    /// drops the empty legacy `wallet_seeds` slot) before the wallet opens its
-    /// seed store. The migration must accept a `db.sqlite` that has no
-    /// `wallet_seeds` table at all.
+    /// The migration must accept a `db.sqlite` that has no `wallet_seeds`
+    /// table at all (e.g. one left behind by a deployment that already
+    /// dropped the legacy slot).
     #[tokio::test]
-    async fn fresh_producer_db_does_not_trip_migration() {
+    async fn seedless_legacy_db_does_not_trip_migration() {
         let dir = temp_dir("fresh-producer-db");
-        let _producer_db = crate::block_producer::Db::new(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        drop(rusqlite::Connection::open(dir.join("db.sqlite")).unwrap());
         let store = SeedStore::new(&dir).unwrap();
         assert!(store.read_mnemonic().await.unwrap().is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -495,8 +510,7 @@ mod tests {
         let dir = temp_dir("full-upgrade");
         {
             let conn = rusqlite::Connection::open(dir.join("db.sqlite")).unwrap();
-            conn.execute_batch(crate::block_producer::db::migration_tests::LEGACY_V7_SCHEMA)
-                .unwrap();
+            conn.execute_batch(LEGACY_V7_SCHEMA).unwrap();
             conn.execute(
                 "INSERT INTO wallet_seeds (plaintext_mnemonic) VALUES (?)",
                 [TEST_MNEMONIC],
@@ -504,25 +518,18 @@ mod tests {
             .unwrap();
         }
 
-        // First boot: the producer opens (and migrates) db.sqlite before the
-        // wallet initializes, exactly as in `app/main.rs`.
-        drop(crate::block_producer::Db::new(&dir).unwrap());
+        // First boot: the wallet migrates the legacy seed into `seed.json`.
         let store = SeedStore::new(&dir).unwrap();
         assert!(store.read_mnemonic().await.unwrap().is_some());
         drop(store);
 
-        // Second boot: the producer reaps the now-empty legacy table.
-        drop(crate::block_producer::Db::new(&dir).unwrap());
+        // The migrated rows are deleted; the emptied legacy table is inert.
+        // (The drivechain policy store that used to reap it is gone.)
         let conn = rusqlite::Connection::open(dir.join("db.sqlite")).unwrap();
-        let has_table: bool = conn
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM sqlite_master
-                  WHERE type = 'table' AND name = 'wallet_seeds')",
-                [],
-                |row| row.get(0),
-            )
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wallet_seeds", [], |row| row.get(0))
             .unwrap();
-        assert!(!has_table, "emptied legacy table must be dropped");
+        assert_eq!(rows, 0, "migrated legacy seed rows must be deleted");
         std::fs::remove_dir_all(&dir).ok();
     }
 

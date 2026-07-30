@@ -12,11 +12,10 @@ use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
 };
 use error_fatality::{Nested as _, Split};
-use fallible_iterator::FallibleIterator;
 use futures::TryFutureExt as _;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
-use sneed::{RoTxn, RwTxn, db, env, rwtxn};
+use sneed::{RwTxn, db, env, rwtxn};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -24,7 +23,7 @@ use crate::{
     errors::ErrorChain,
     messages::parse_m8_tx,
     proto::mainchain::HeaderSyncProgress,
-    types::{Ctip, Event, SidechainNumber},
+    types::Event,
     validator::{
         Validator,
         task::{self, BlockHandler, error::ValidateTransaction as ValidateTransactionError},
@@ -318,48 +317,6 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
     }
 }
 
-/// Used to implement `ConnectBlockMode`.
-/// Connects a block, but aborts the rwtxn.
-/// If the block is accepted, the function is executed on the rwtxn state
-/// before aborting, and the result of the function is returned.
-/// If the block is rejected, the rejection reason is returned.
-#[repr(transparent)]
-struct ConnectBlockDryRun<F>(F);
-
-impl<'validator, F, Output> ConnectBlockMode<'validator> for ConnectBlockDryRun<F>
-where
-    F: FnOnce(&RoTxn<'_>) -> Output,
-{
-    type Output = Result<Output, RejectReason>;
-
-    #[tracing::instrument(name = "connect_block(dry run)", skip_all)]
-    fn connect_block(
-        self,
-        validator: &'validator Validator,
-        block: &Block,
-    ) -> Result<Self::Output, ConnectBlockError> {
-        let rwtxns = match connect_block_no_commit(validator, block)? {
-            ConnectBlockRwTxnAction::Accept {
-                event: _,
-                rwtxns,
-                remove_mempool_txs: _,
-            } => rwtxns,
-            ConnectBlockRwTxnAction::Reject {
-                header_rwtxn,
-                reason,
-            } => {
-                tracing::warn!("rejecting block: {:#}", ErrorChain::new(&reason));
-                header_rwtxn.abort();
-                return Ok(Err(reason));
-            }
-        };
-        let res: Output = rwtxns.with_child(|child_rwtxn| self.0(child_rwtxn));
-        let rwtxn = rwtxns.abort_child();
-        rwtxn.abort(); // We don't want the effects of the block to be applied!
-        Ok(Ok(res))
-    }
-}
-
 impl CusfEnforcer for Validator {
     type SyncError = SyncError;
 
@@ -536,36 +493,5 @@ impl CusfEnforcer for Validator {
             TxAcceptAction::Reject
         };
         Ok(res)
-    }
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum GetCtipsAfterError {
-    #[error(transparent)]
-    ConnectBlock(#[from] ConnectBlockError),
-    #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
-}
-
-/// Get ctips after (speculatively) applying a block.
-/// Returns the rejection reason if the block would be rejected.
-pub(crate) fn get_ctips_after(
-    validator: &Validator,
-    block: &Block,
-) -> Result<Result<HashMap<SidechainNumber, Ctip>, String>, GetCtipsAfterError> {
-    match ConnectBlockDryRun(|rotxn: &RoTxn<'_>| -> Result<_, _> {
-        validator
-            .dbs
-            .active_sidechains
-            .ctip()
-            .iter(rotxn)
-            .map_err(db::error::Iter::Init)?
-            .collect()
-            .map_err(db::error::Iter::Item)
-    })
-    .connect_block(validator, block)?
-    {
-        Ok(ctips) => Ok(Ok(ctips?)),
-        Err(reason) => Ok(Err(format!("{:#}", ErrorChain::new(&reason)))),
     }
 }

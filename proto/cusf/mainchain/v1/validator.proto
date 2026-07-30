@@ -4,7 +4,6 @@ syntax = "proto3";
 package cusf.mainchain.v1;
 
 import "cusf/common/v1/common.proto";
-import "cusf/mainchain/v1/common.proto";
 import "google/protobuf/wrappers.proto";
 
 message BlockHeaderInfo {
@@ -26,49 +25,11 @@ enum Network {
   NETWORK_TESTNET = 5;
 }
 
-message Deposit {
-  message Output {
-    cusf.common.v1.Hex address = 2;
-    google.protobuf.UInt64Value value_sats = 3;
-  }
-
-  google.protobuf.UInt64Value sequence_number = 1;
-  OutPoint outpoint = 2;
-  Output output = 3;
-}
-
-message WithdrawalBundleEvent {
-  message Event {
-    message Failed {}
-    message Succeeded {
-      google.protobuf.UInt64Value sequence_number = 1;
-      cusf.common.v1.ConsensusHex transaction = 2;
-    }
-    message Submitted {}
-    oneof event {
-      Failed failed = 1;
-      Succeeded succeeded = 2;
-      Submitted submitted = 3;
-    }
-  }
-
-  cusf.common.v1.ConsensusHex m6id = 1;
-  Event event = 2;
-}
-
-// Specific to an individual sidechain slot
+// Per-block information tracked by the enforcer beyond the raw header.
+// Drivechain fields (BMM commitment, deposit/withdrawal events) were removed;
+// their field numbers are reserved.
 message BlockInfo {
-  message Event {
-    oneof event {
-      Deposit deposit = 1;
-      WithdrawalBundleEvent withdrawal_bundle = 2;
-    }
-  }
-
-  //repeated Deposit deposits = 1;
-  //repeated WithdrawalBundleEvent withdrawal_bundle_events = 2;
-  optional cusf.common.v1.ConsensusHex bmm_commitment = 1;
-  repeated Event events = 2;
+  reserved 1, 2;
 }
 
 service ValidatorService {
@@ -79,35 +40,14 @@ service ValidatorService {
   }
 
   // Fetches information about a specific mainchain block (and optionally,
-  // it's ancestors), regarding how it pertains to events happening on a
-  // specific sidechain.
+  // it's ancestors).
   rpc GetBlockInfo(GetBlockInfoRequest) returns (GetBlockInfoResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  // Fetches BMM h* commitment for a specific mainchain block,
-  // and optionally, it's ancestors
-  rpc GetBmmHStarCommitment(GetBmmHStarCommitmentRequest) returns (GetBmmHStarCommitmentResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc GetChainInfo(GetChainInfoRequest) returns (GetChainInfoResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc GetChainTip(GetChainTipRequest) returns (GetChainTipResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  rpc GetCoinbasePSBT(GetCoinbasePSBTRequest) returns (GetCoinbasePSBTResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  rpc GetCtip(GetCtipRequest) returns (GetCtipResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  rpc GetSidechainProposals(GetSidechainProposalsRequest) returns (GetSidechainProposalsResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  rpc GetSidechains(GetSidechainsRequest) returns (GetSidechainsResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-  rpc GetTwoWayPegData(GetTwoWayPegDataRequest) returns (GetTwoWayPegDataResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse) {
@@ -141,8 +81,8 @@ message GetBlockInfoRequest {
   // The block to fetch information about.
   cusf.common.v1.ReverseHex block_hash = 1;
 
-  // The sidechain to filter for events relating to.
-  google.protobuf.UInt32Value sidechain_id = 2;
+  // Previously the sidechain to filter events for (drivechain; removed).
+  reserved 2;
 
   // Request block info for up to `max_ancestors` ancestors.
   // Fewer ancestors MAY be returned.
@@ -153,8 +93,7 @@ message GetBlockInfoResponse {
   message Info {
     // Information about the block itself.
     BlockHeaderInfo header_info = 1;
-    // Information about the block, filtered for events relating to a specific
-    // sidechain.
+    // Additional per-block information tracked by the enforcer.
     BlockInfo block_info = 2;
   }
   // Empty if the requested block was not found.
@@ -162,68 +101,16 @@ message GetBlockInfoResponse {
   repeated Info infos = 1;
 }
 
-message GetBmmHStarCommitmentRequest {
-  cusf.common.v1.ReverseHex block_hash = 1;
-  google.protobuf.UInt32Value sidechain_id = 2;
-  // Request commitments for up to `max_ancestors` ancestors.
-  // Fewer ancestors MAY be returned.
-  optional uint32 max_ancestors = 3;
-}
-message GetBmmHStarCommitmentResponse {
-  message BlockNotFoundError {
-    cusf.common.v1.ReverseHex block_hash = 1;
-  }
-  message OptionalCommitment {
-    optional cusf.common.v1.ConsensusHex commitment = 1;
-  }
-  message Commitment {
-    optional cusf.common.v1.ConsensusHex commitment = 1;
-    // Ancestors MUST be sorted newest-first
-    repeated OptionalCommitment ancestor_commitments = 2;
-  }
-  oneof result {
-    BlockNotFoundError block_not_found = 1;
-    Commitment commitment = 2;
-  }
-}
-
 message GetChainInfoRequest {}
 message GetChainInfoResponse {
-  message Bip300Constants {
-    // Maximum age (in mainchain blocks) of a withdrawal bundle before it is
-    // considered failed.
-    uint32 withdrawal_bundle_max_age = 1;
-
-    // Number of mainchain blocks within `withdrawal_bundle_max_age` that a
-    // withdrawal bundle must be included in to succeed.
-    uint32 withdrawal_bundle_inclusion_threshold = 2;
-
-    // Maximum age (in mainchain blocks) of a proposal for an already-used
-    // sidechain slot before it expires.
-    uint32 used_sidechain_slot_proposal_max_age = 3;
-
-    // Number of votes required to activate a proposal for an already-used
-    // sidechain slot.
-    uint32 used_sidechain_slot_activation_threshold = 4;
-
-    // Maximum age (in mainchain blocks) of a proposal for an unused sidechain
-    // slot before it expires.
-    uint32 unused_sidechain_slot_proposal_max_age = 5;
-
-    // Number of votes required to activate a proposal for an unused sidechain
-    // slot.
-    uint32 unused_sidechain_slot_activation_threshold = 6;
-
-    // Height at which enforcement activates. Blocks below this
-    // height are plain Bitcoin history and are not scanned for BIP300
-    // messages or deposits. 0 means enforced from genesis.
-    uint32 activation_height = 7;
-  }
+  // Previously BIP300 consensus constants (drivechain; removed).
+  reserved 2;
 
   Network network = 1;
 
-  // BIP300 consensus constants for the active network.
-  Bip300Constants bip300_constants = 2;
+  // Height at which enforcement activates. Blocks below this height are
+  // plain Bitcoin history. 0 means enforced from genesis.
+  uint32 activation_height = 3;
 }
 
 message GetChainTipRequest {}
@@ -231,105 +118,9 @@ message GetChainTipResponse {
   BlockHeaderInfo block_header_info = 1;
 }
 
-message GetCoinbasePSBTRequest {
-  message ProposeSidechain {
-    google.protobuf.UInt32Value sidechain_number = 1;
-    cusf.common.v1.ConsensusHex data = 2;
-  }
-  message AckSidechain {
-    google.protobuf.UInt32Value sidechain_number = 1;
-    cusf.common.v1.ConsensusHex data_hash = 2;
-  }
-  message ProposeBundle {
-    google.protobuf.UInt32Value sidechain_number = 1;
-    cusf.common.v1.ReverseHex bundle_txid = 2;
-  }
-  message AckBundles {
-    message RepeatPrevious {}
-    message LeadingBy50 {}
-    message Upvotes {
-      repeated uint32 upvotes = 1;
-    }
-    oneof ack_bundles {
-      RepeatPrevious repeat_previous = 1;
-      LeadingBy50 leading_by_50 = 2;
-      Upvotes upvotes = 3;
-    }
-  }
-
-  repeated ProposeSidechain propose_sidechains = 1;
-  repeated AckSidechain ack_sidechains = 2;
-  repeated ProposeBundle propose_bundles = 3;
-  AckBundles ack_bundles = 4;
-}
-message GetCoinbasePSBTResponse {
-  cusf.common.v1.ConsensusHex psbt = 1;
-}
-
-message GetCtipRequest {
-  google.protobuf.UInt32Value sidechain_number = 1;
-}
-message GetCtipResponse {
-  message Ctip {
-    cusf.common.v1.ReverseHex txid = 1;
-    uint32 vout = 2;
-    uint64 value = 3;
-    uint64 sequence_number = 4;
-  }
-  optional Ctip ctip = 1;
-}
-
-message GetSidechainProposalsRequest {}
-message GetSidechainProposalsResponse {
-  message SidechainProposal {
-    google.protobuf.UInt32Value sidechain_number = 1;
-
-    // Raw sidechain proposal description
-    cusf.common.v1.ConsensusHex description = 2;
-
-    // Sidechain data, as declared in the M1 proposal.
-    // Might be nil, if the proposal uses an unknown version.
-    optional SidechainDeclaration declaration = 7;
-
-    cusf.common.v1.ReverseHex description_sha256d_hash = 3;
-    google.protobuf.UInt32Value vote_count = 4;
-    google.protobuf.UInt32Value proposal_height = 5;
-    google.protobuf.UInt32Value proposal_age = 6;
-  }
-  repeated SidechainProposal sidechain_proposals = 1;
-}
-
-message GetSidechainsRequest {}
-message GetSidechainsResponse {
-  message SidechainInfo {
-    google.protobuf.UInt32Value sidechain_number = 1;
-    cusf.common.v1.ConsensusHex description = 2;
-    google.protobuf.UInt32Value vote_count = 3;
-    google.protobuf.UInt32Value proposal_height = 4;
-    google.protobuf.UInt32Value activation_height = 5;
-
-    // Sidechain data, as declared in the M1 proposal.
-    // Might be nil, if the proposal uses an unknown version.
-    optional SidechainDeclaration declaration = 6;
-  }
-  repeated SidechainInfo sidechains = 1;
-}
-
-message GetTwoWayPegDataRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
-  optional cusf.common.v1.ReverseHex start_block_hash = 2;
-  cusf.common.v1.ReverseHex end_block_hash = 3;
-}
-message GetTwoWayPegDataResponse {
-  message ResponseItem {
-    BlockHeaderInfo block_header_info = 1;
-    BlockInfo block_info = 2;
-  }
-  repeated ResponseItem blocks = 1;
-}
-
 message SubscribeEventsRequest {
-  google.protobuf.UInt32Value sidechain_id = 1;
+  // Previously the sidechain to filter events for (drivechain; removed).
+  reserved 1;
 }
 message SubscribeEventsResponse {
   message Event {

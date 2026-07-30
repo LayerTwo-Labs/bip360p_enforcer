@@ -36,7 +36,6 @@ use bitcoin_jsonrpsee::{
 use crate::{
     bins::{self, CommandExt as _},
     block_producer::{BlockProducer, error},
-    messages::CoinbaseBuilder,
 };
 
 fn target_block_interval(signet_challenge: &bitcoin::Script) -> std::time::Duration {
@@ -83,8 +82,7 @@ impl BlockProducer {
 
     /// select non-coinbase txs for a new block
     async fn select_block_txs(&self) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
-        let ctips = self.validator().get_ctips()?;
-        let mut res = self.generate_suffix_txs(&ctips).await?;
+        let mut res = Vec::new();
 
         // We want to include all transactions from the mempool into our newly generated block.
         // This approach is perhaps a bit naive, and could fail if there are conflicting TXs
@@ -552,7 +550,6 @@ impl BlockProducer {
     pub async fn generate_block(
         &self,
         coinbase_addr: bitcoin::Address,
-        ack_all_proposals: bool,
     ) -> Result<BlockHash, error::GenerateBlock> {
         if self.validator().network() == Network::Signet {
             return self
@@ -561,29 +558,11 @@ impl BlockProducer {
                 .map_err(error::GenerateBlock::GenerateSignetBlock);
         }
         let coinbase_spk = coinbase_addr.script_pubkey();
-        let Some(mainchain_tip) = self.validator().try_get_mainchain_tip()? else {
+        if self.validator().try_get_mainchain_tip()?.is_none() {
             return Err(error::GenerateBlock::ValidatorNotSynced);
         };
-        let mut coinbase_outputs = Vec::new();
-        let () = self
-            .extend_coinbase_txouts(ack_all_proposals, mainchain_tip, &mut coinbase_outputs)
-            .await?;
+        let coinbase_outputs = Vec::new();
         let transactions = self.select_block_txs().await?;
-        let mut coinbase_builder = CoinbaseBuilder::new(&mut coinbase_outputs)?;
-        for tx in &transactions {
-            if let Some(bmm_request) = crate::messages::parse_m8_tx(tx)
-                && coinbase_builder
-                    .messages()
-                    .m7_bmm_accept_slot_vout(&bmm_request.sidechain_number)
-                    .is_none()
-            {
-                coinbase_builder.bmm_accept(
-                    bmm_request.sidechain_number,
-                    bmm_request.sidechain_block_hash,
-                )?;
-            }
-        }
-        let () = coinbase_builder.build()?;
 
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),
@@ -594,10 +573,6 @@ impl BlockProducer {
         let block_hash = self
             .mine(coinbase_spk, &coinbase_outputs, transactions)
             .await?;
-        self.db()
-            .delete_bmm_requests(&mainchain_tip, &block_hash)
-            .await
-            .map_err(error::GenerateBlock::DeleteBmmRequests)?;
         Ok(block_hash)
     }
 }

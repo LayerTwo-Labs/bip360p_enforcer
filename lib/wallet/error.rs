@@ -1,15 +1,13 @@
 use std::{fmt::Debug, path::PathBuf};
 
 use bdk_esplora::esplora_client;
-use bitcoin_jsonrpsee::jsonrpsee::core::client::Error as JsonRpcError;
 use cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer;
 use miette::Diagnostic;
 use serde::Deserialize;
 use thiserror::Error;
 
 pub use crate::block_producer::error::{
-    BitcoinCoreRPC, FinalizeBlockTemplate, GenerateCoinbaseTxouts, GenerateSuffixTxs,
-    GetBundleProposals, InitDbConnection, InitialBlockTemplate,
+    BitcoinCoreRPC, FinalizeBlockTemplate, InitDbConnection, InitialBlockTemplate,
 };
 use crate::{
     proto::{StatusBuilder, ToStatus},
@@ -619,103 +617,6 @@ pub mod full_scan {
 
 pub use self::full_scan::Error as FullScan;
 
-#[derive(Debug, Diagnostic, Error)]
-pub enum FetchTransaction {
-    #[error(transparent)]
-    BitcoinCoreRPC(#[from] BitcoinCoreRPC),
-    #[error(transparent)]
-    Convert(#[from] bitcoin::consensus::encode::Error),
-    #[error(transparent)]
-    DeserializeHex(#[from] bitcoin::consensus::encode::FromHexError),
-}
-
-impl ToStatus for FetchTransaction {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::BitcoinCoreRPC(err) => err.builder(),
-            Self::Convert(err) => StatusBuilder::new(err),
-            Self::DeserializeHex(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum CreateDepositPsbt {
-    #[error(transparent)]
-    AddForeignUtxo(#[from] bdk_wallet::AddForeignUtxoError),
-    #[error("failed to create tx")]
-    CreateTx(#[from] bdk_wallet::error::CreateTxError),
-    #[error("failed to fetch transaction (`{txid}`)")]
-    FetchTransaction {
-        txid: bitcoin::Txid,
-        source: FetchTransaction,
-    },
-    #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    #[error("failed to parse sidechain number")]
-    ParseSidechainNumber,
-}
-
-impl ToStatus for CreateDepositPsbt {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::AddForeignUtxo(err) => StatusBuilder::new(err),
-            Self::FetchTransaction { source, .. } => {
-                StatusBuilder::with_code(self, source.builder())
-            }
-            Self::NotUnlocked(err) => err.builder(),
-            Self::CreateTx(_) | Self::ParseSidechainNumber => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum CreateDeposit {
-    #[error("failed to broadcast tx")]
-    BroadcastTx(#[source] jsonrpsee::core::ClientError),
-    #[error("failed to broadcast nonstandard tx to {peer_addr}")]
-    BroadcastNonstandardTx {
-        peer_addr: crate::p2p::BroadcastAddr,
-        source: crate::p2p::BroadcastNonstandardTxError,
-    },
-    #[error("broadcast deposit transaction failed: {txid}")]
-    BroadcastUnsuccessful { txid: bitcoin::Txid },
-    #[error("failed to convert sidechain address to PushBytesBuf")]
-    ConvertSidechainAddress(#[source] bitcoin::script::PushBytesError),
-    #[error(transparent)]
-    OutputAmountOverflow(#[from] crate::types::AmountOverflowError),
-    #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    #[error(transparent)]
-    Persistence(#[from] Persistence),
-    #[error(transparent)]
-    Psbt(#[from] CreateDepositPsbt),
-    #[error(transparent)]
-    SignTransaction(#[from] WalletSignTransaction),
-    #[error(transparent)]
-    TryGetCtip(#[from] validator::TryGetCtipError),
-    #[error(transparent)]
-    TryGetMainchainTipHeight(#[from] validator::TryGetMainchainTipHeightError),
-}
-
-impl ToStatus for CreateDeposit {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::BroadcastTx(_)
-            | Self::BroadcastNonstandardTx { .. }
-            | Self::BroadcastUnsuccessful { .. }
-            | Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
-            Self::OutputAmountOverflow(err) => err.builder(),
-            Self::NotUnlocked(err) => err.builder(),
-            Self::Persistence(err) => StatusBuilder::new(err),
-            Self::Psbt(err) => err.builder(),
-            Self::SignTransaction(err) => err.builder(),
-            Self::TryGetCtip(err) => err.builder(),
-            Self::TryGetMainchainTipHeight(err) => err.builder(),
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum SqliteError {
     #[error(transparent)]
@@ -887,29 +788,6 @@ impl ToStatus for ListWalletTransactions {
 }
 
 #[derive(Diagnostic, Debug, Error)]
-pub enum ListSidechainDepositTransactions {
-    #[error(transparent)]
-    GetTreasuryUtxo(#[from] validator::GetTreasuryUtxoError),
-    #[error(transparent)]
-    ListWalletTransactions(#[from] ListWalletTransactions),
-    #[error(transparent)]
-    TryGetCtip(#[from] validator::TryGetCtipError),
-    #[error(transparent)]
-    TryGetCtipValueSeq(#[from] validator::TryGetCtipValueSeqError),
-}
-
-impl ToStatus for ListSidechainDepositTransactions {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::GetTreasuryUtxo(err) => err.builder(),
-            Self::ListWalletTransactions(err) => err.builder(),
-            Self::TryGetCtip(err) => err.builder(),
-            Self::TryGetCtipValueSeq(err) => err.builder(),
-        }
-    }
-}
-
-#[derive(Diagnostic, Debug, Error)]
 pub enum CreateSendPsbt {
     #[error(transparent)]
     CreateTx(#[from] bdk_wallet::error::CreateTxError),
@@ -962,78 +840,6 @@ impl ToStatus for SendWalletTransaction {
             Self::NotUnlocked(err) => err.builder(),
             Self::Persistence(err) => StatusBuilder::new(err),
         }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum BuildBmmTx {
-    #[error(transparent)]
-    CreateTx(#[from] bdk_wallet::error::CreateTxError),
-    #[error(transparent)]
-    NotUnlocked(#[from] NotUnlocked),
-    #[error(transparent)]
-    Script(#[from] bitcoin::script::PushBytesError),
-}
-
-impl ToStatus for BuildBmmTx {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::CreateTx(err) => StatusBuilder::new(err),
-            Self::NotUnlocked(err) => err.builder(),
-            Self::Script(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub(in crate::wallet) enum CreateBmmRequestInner {
-    #[error("failed to build BMM tx")]
-    BuildBmmTx(#[from] BuildBmmTx),
-    #[error("failed to broadcast nonstandard tx")]
-    BroadcastNonstandardTx(#[source] crate::p2p::BroadcastNonstandardTxError),
-    #[error("failed to broadcast BMM request tx via RPC")]
-    BroadcastTxRpc(#[source] JsonRpcError),
-    #[error("broadcast deposit transaction failed: {txid}")]
-    BroadcastUnsuccessful { txid: bitcoin::Txid },
-    #[error(transparent)]
-    GetHeaderInfo(#[from] validator::GetHeaderInfoError),
-    #[error("rusqlite error")]
-    Rusqlite(#[from] rusqlite::Error),
-    #[error("failed to sign BMM tx")]
-    SignTx(#[from] WalletSignTransaction),
-}
-
-impl ToStatus for CreateBmmRequestInner {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::BuildBmmTx(err) => StatusBuilder::with_code(self, err.builder()),
-            Self::GetHeaderInfo(err) => err.builder(),
-            Self::SignTx(err) => StatusBuilder::with_code(self, err.builder()),
-            Self::BroadcastNonstandardTx(_)
-            | Self::BroadcastTxRpc(_)
-            | Self::BroadcastUnsuccessful { .. }
-            | Self::Rusqlite(_) => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-#[error("error creating BMM request")]
-#[repr(transparent)]
-pub struct CreateBmmRequest(#[source] CreateBmmRequestInner);
-
-impl<T> From<T> for CreateBmmRequest
-where
-    CreateBmmRequestInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-impl ToStatus for CreateBmmRequest {
-    fn builder(&self) -> StatusBuilder<'_> {
-        StatusBuilder::with_code(self, self.0.builder())
     }
 }
 

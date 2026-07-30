@@ -23,9 +23,6 @@ service MiningService {
   // Mine blocks immediately to a specified address, returning the hashes of
   // the mined blocks. Analogous to Bitcoin Core's `generatetoaddress` RPC.
   //
-  // The ACK policy for sidechain proposals is the persisted block producer
-  // policy (see BlockProducerService.SetSidechainAck / SetAckAllProposals).
-  //
   // On signet, blocks are produced by the signet miner, which sources its
   // template from the enforcer's own block template server. Signet therefore
   // requires the enforcer to run with `--enable-block-template-server`, and

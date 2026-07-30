@@ -2,9 +2,7 @@
 
 use std::{
     borrow::Borrow,
-    collections::HashMap,
     ffi::OsStr,
-    future::Future,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, LazyLock},
@@ -15,26 +13,18 @@ use bip300301_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
         self,
-        mainchain::{
-            BroadcastWithdrawalBundleRequest, BroadcastWithdrawalBundleResponse, GetChainTipRequest,
-        },
-        mainchain_service::{
-            BlockProducerServiceClient, MiningServiceClient, ValidatorServiceClient,
-            WalletServiceClient,
-        },
+        mainchain::GetChainTipRequest,
+        mainchain_service::{MiningServiceClient, ValidatorServiceClient, WalletServiceClient},
     },
-    types::{BlindedM6, BlindedM6Error, M6id, SidechainNumber},
 };
-use bitcoin::{Address, Txid};
+use bitcoin::Address;
 use connectrpc::{
-    ConnectError,
     client::{ClientConfig, HttpClient},
     error::ErrorCode,
 };
-use futures::{channel::mpsc, future};
+use futures::channel::mpsc;
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
-use thiserror::Error;
 use tokio::{
     net::TcpStream,
     time::{Duration, sleep, timeout},
@@ -519,7 +509,6 @@ pub struct PostSetup {
     pub gbt_client: jsonrpsee::http_client::HttpClient,
     pub validator_service_client: ValidatorServiceClient<Transport>,
     pub wallet_service_client: WalletServiceClient<Transport>,
-    pub block_producer_service_client: BlockProducerServiceClient<Transport>,
     pub mining_service_client: MiningServiceClient<Transport>,
     pub mining_address: Address,
     pub receive_address: Address,
@@ -742,8 +731,6 @@ impl PostSetup {
         }
         let (http, config) = make_client(enforcer.serve_grpc_port)?;
         let validator_service_client = ValidatorServiceClient::new(http.clone(), config.clone());
-        let block_producer_service_client =
-            BlockProducerServiceClient::new(http.clone(), config.clone());
         let mining_service_client = MiningServiceClient::new(http.clone(), config.clone());
         let wallet_service_client = WalletServiceClient::new(http, config);
         // The gRPC port opens before the validator has synced the blocks that
@@ -769,7 +756,6 @@ impl PostSetup {
             gbt_client,
             validator_service_client,
             wallet_service_client,
-            block_producer_service_client,
             mining_service_client,
             mining_address,
             receive_address,
@@ -819,334 +805,5 @@ impl<B> PreSetup<B> {
             res_tx,
         )
         .await
-    }
-}
-
-pub trait Sidechain: Sized {
-    const SIDECHAIN_NUMBER: SidechainNumber;
-
-    type Init;
-
-    type SetupError: std::error::Error + Send + Sync + 'static;
-
-    fn setup(
-        init: Self::Init,
-        post_setup: &PostSetup,
-        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
-    ) -> impl Future<Output = Result<Self, Self::SetupError>> + Send;
-
-    type GetDepositAddressError: std::error::Error + Send + Sync + 'static;
-
-    /// Get a sidechain address to deposit to
-    fn get_deposit_address(
-        &self,
-    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send;
-
-    type ConfirmDepositError: std::error::Error + Send + Sync + 'static;
-
-    fn confirm_deposit(
-        &mut self,
-        post_setup: &mut PostSetup,
-        address: &str,
-        value: bitcoin::Amount,
-        txid: bitcoin::Txid,
-    ) -> impl Future<Output = Result<(), Self::ConfirmDepositError>> + Send;
-
-    /// Create a withdrawal and broadcast the bundle
-    type CreateWithdrawalError: std::error::Error + Send + Sync + 'static;
-
-    fn create_withdrawal(
-        &mut self,
-        post_setup: &mut PostSetup,
-        receive_address: &bitcoin::Address,
-        value: bitcoin::Amount,
-        fee: bitcoin::Amount,
-    ) -> impl Future<Output = Result<M6id, Self::CreateWithdrawalError>> + Send;
-}
-
-#[derive(Debug, Error)]
-pub enum DummySidechainError {
-    #[error(transparent)]
-    BlindedM6(#[from] BlindedM6Error),
-    #[error(transparent)]
-    Grpc(Box<ConnectError>),
-    #[error("Event stream was cancelled due to earlier error")]
-    EventStreamCancelled,
-    #[error("Event stream was closed unexpectedly")]
-    EventStreamClosed,
-}
-
-impl From<ConnectError> for DummySidechainError {
-    fn from(err: ConnectError) -> Self {
-        Self::Grpc(Box::new(err))
-    }
-}
-
-impl From<proto::Error> for DummySidechainError {
-    fn from(err: proto::Error) -> Self {
-        Self::Grpc(Box::new(err.into()))
-    }
-}
-
-/// Dummy implementation of `Sidechain`
-pub struct DummySidechain {
-    /// If a withdrawal fails, add the value here until another withdrawal
-    /// is created
-    pending_withdrawal_value: bitcoin::Amount,
-    /// If a withdrawal fails, add the fee here until another withdrawal
-    /// is created
-    pending_withdrawal_fee: bitcoin::Amount,
-    withdrawal_bundles: HashMap<M6id, BlindedM6<'static>>,
-    /// Receiver for SubscribeEvents stream items. The producer is a
-    /// background task spawned in `setup` that pumps a connectrpc
-    /// `ServerStream` into this channel. `None` after the stream errors or
-    /// closes.
-    event_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<
-            Result<proto::mainchain::SubscribeEventsResponse, ConnectError>,
-        >,
-    >,
-}
-
-impl DummySidechain {
-    /// Construct a blinded M6 tx
-    fn blinded_m6<Payouts>(
-        fee_sats: u64,
-        payouts: Payouts,
-    ) -> Result<BlindedM6<'static>, BlindedM6Error>
-    where
-        Payouts: IntoIterator<Item = bitcoin::TxOut>,
-    {
-        let fee_txout = {
-            let script_pubkey = bitcoin::script::Builder::new()
-                .push_opcode(bitcoin::opcodes::all::OP_RETURN)
-                .push_slice(fee_sats.to_be_bytes())
-                .into_script();
-            bitcoin::TxOut {
-                value: bitcoin::Amount::ZERO,
-                script_pubkey,
-            }
-        };
-        let outputs = Vec::from_iter(std::iter::once(fee_txout).chain(payouts));
-        let tx = bitcoin::Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::blockdata::locktime::absolute::LockTime::ZERO,
-            input: Vec::new(),
-            output: outputs,
-        };
-        let res = BlindedM6::try_from(std::borrow::Cow::Owned(tx))?;
-        Ok(res)
-    }
-
-    /// Extract withdrawal bundle events from block info events
-    fn extract_withdrawal_bundle_event(
-        block_event: proto::mainchain::block_info::Event,
-    ) -> Result<Option<proto::mainchain::WithdrawalBundleEvent>, proto::Error> {
-        use proto::mainchain::block_info::event::Event;
-        let event = block_event.event.ok_or_else(|| {
-            proto::Error::missing_field::<proto::mainchain::block_info::Event>("event")
-        })?;
-        match event {
-            Event::Deposit(_) => Ok(None),
-            Event::WithdrawalBundle(wbe) => Ok(Some(*wbe)),
-        }
-    }
-
-    /// Drain any currently-ready events from the channel (non-blocking).
-    fn update_from_events(&mut self) -> Result<(), DummySidechainError> {
-        use bip300301_enforcer_lib::proto::{
-            self,
-            mainchain::{
-                SubscribeEventsResponse, WithdrawalBundleEvent,
-                subscribe_events_response::{
-                    self,
-                    event::{ConnectBlock, Event},
-                },
-                withdrawal_bundle_event,
-            },
-        };
-        use tokio::sync::mpsc::error::TryRecvError;
-        let Some(rx) = self.event_rx.as_mut() else {
-            return Err(DummySidechainError::EventStreamCancelled);
-        };
-        loop {
-            let item = match rx.try_recv() {
-                Ok(item) => item,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.event_rx = None;
-                    return Err(DummySidechainError::EventStreamClosed);
-                }
-            };
-            let SubscribeEventsResponse { event, .. } = match item {
-                Ok(event) => event,
-                Err(err) => {
-                    self.event_rx = None;
-                    return Err(err.into());
-                }
-            };
-            let subscribe_events_response::Event { event, .. } = event
-                .into_option()
-                .ok_or_else(|| proto::Error::missing_field::<SubscribeEventsResponse>("event"))?;
-            let event: subscribe_events_response::event::Event = event.ok_or_else(|| {
-                proto::Error::missing_field::<subscribe_events_response::Event>("event")
-            })?;
-            match event {
-                Event::ConnectBlock(connect_block_event) => {
-                    let block_info = connect_block_event
-                        .block_info
-                        .into_option()
-                        .ok_or_else(|| proto::Error::missing_field::<ConnectBlock>("block_info"))?;
-                    'inner: for event in block_info.events {
-                        let Some(wbe) = Self::extract_withdrawal_bundle_event(event)? else {
-                            continue 'inner;
-                        };
-                        let m6id = wbe
-                            .m6id
-                            .into_option()
-                            .ok_or_else(|| {
-                                proto::Error::missing_field::<WithdrawalBundleEvent>("m6id")
-                            })?
-                            .decode::<WithdrawalBundleEvent, Txid>("m6id")
-                            .map(M6id)?;
-                        let wbe_inner = wbe
-                            .event
-                            .into_option()
-                            .ok_or_else(|| {
-                                proto::Error::missing_field::<WithdrawalBundleEvent>("event")
-                            })?
-                            .event
-                            .ok_or_else(|| {
-                                proto::Error::missing_field::<withdrawal_bundle_event::Event>(
-                                    "event",
-                                )
-                            })?;
-                        match wbe_inner {
-                            withdrawal_bundle_event::event::Event::Failed(_) => {
-                                let failed_withdrawal = &self.withdrawal_bundles[&m6id];
-                                self.pending_withdrawal_fee += *failed_withdrawal.fee();
-                                self.pending_withdrawal_value += *failed_withdrawal.payout();
-                            }
-                            withdrawal_bundle_event::event::Event::Submitted(_)
-                            | withdrawal_bundle_event::event::Event::Succeeded(_) => (),
-                        }
-                    }
-                }
-                Event::DisconnectBlock(_) => (),
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Sidechain for DummySidechain {
-    const SIDECHAIN_NUMBER: SidechainNumber = SidechainNumber(0);
-
-    type Init = ();
-
-    type SetupError = ConnectError;
-
-    async fn setup(
-        _: Self::Init,
-        post_setup: &PostSetup,
-        _: mpsc::UnboundedSender<anyhow::Result<()>>,
-    ) -> Result<Self, Self::SetupError> {
-        use bip300301_enforcer_lib::proto::mainchain::SubscribeEventsRequest;
-        let subscribe_events_request = SubscribeEventsRequest {
-            sidechain_id: proto::wrap_u32(Self::SIDECHAIN_NUMBER.0.into()),
-        };
-        let mut stream = post_setup
-            .validator_service_client
-            .subscribe_events(subscribe_events_request)
-            .await?;
-        // Pump the connect-rust ServerStream into a tokio mpsc so the
-        // existing non-blocking `try_recv`-based event drain works as before.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            loop {
-                match stream.message().await {
-                    Ok(Some(view)) => {
-                        if tx.send(Ok(view.to_owned_message())).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        drop(tx.send(Err(err)));
-                        break;
-                    }
-                }
-            }
-        });
-        Ok(Self {
-            pending_withdrawal_fee: bitcoin::Amount::ZERO,
-            pending_withdrawal_value: bitcoin::Amount::ZERO,
-            withdrawal_bundles: HashMap::new(),
-            event_rx: Some(rx),
-        })
-    }
-
-    type GetDepositAddressError = std::convert::Infallible;
-
-    fn get_deposit_address(
-        &self,
-    ) -> impl Future<Output = Result<String, Self::GetDepositAddressError>> + Send {
-        future::ok("sidechain address".to_owned())
-    }
-
-    type ConfirmDepositError = std::convert::Infallible;
-
-    async fn confirm_deposit(
-        &mut self,
-        _: &mut PostSetup,
-        _: &str,
-        _: bitcoin::Amount,
-        _: bitcoin::Txid,
-    ) -> Result<(), Self::ConfirmDepositError> {
-        Ok(())
-    }
-
-    type CreateWithdrawalError = DummySidechainError;
-
-    async fn create_withdrawal(
-        &mut self,
-        post_setup: &mut PostSetup,
-        receive_address: &bitcoin::Address,
-        mut value: bitcoin::Amount,
-        mut fee: bitcoin::Amount,
-    ) -> Result<M6id, Self::CreateWithdrawalError> {
-        let () = self.update_from_events()?;
-        value += self.pending_withdrawal_value;
-        self.pending_withdrawal_value = bitcoin::Amount::ZERO;
-        fee += self.pending_withdrawal_fee;
-        self.pending_withdrawal_fee = bitcoin::Amount::ZERO;
-        let blinded_m6 = Self::blinded_m6(
-            fee.to_sat(),
-            [bitcoin::TxOut {
-                script_pubkey: receive_address.script_pubkey(),
-                value,
-            }],
-        )?;
-        let m6id = blinded_m6.compute_m6id();
-        tracing::debug!(
-            %m6id,
-            value = %value.display_dynamic(),
-            fee = %value.display_dynamic(),
-            "Creating Withdrawal"
-        );
-        let withdrawal_bundle_tx = blinded_m6.clone().tx().into_owned();
-        self.withdrawal_bundles.insert(m6id, blinded_m6);
-        let _resp: BroadcastWithdrawalBundleResponse = post_setup
-            .wallet_service_client
-            .broadcast_withdrawal_bundle(BroadcastWithdrawalBundleRequest {
-                sidechain_id: proto::wrap_u32(Self::SIDECHAIN_NUMBER.0.into()),
-                transaction: buffa::MessageField::some(buffa_types::google::protobuf::BytesValue {
-                    value: bitcoin::consensus::serialize(&withdrawal_bundle_tx),
-                    ..Default::default()
-                }),
-            })
-            .await?
-            .into_owned();
-        Ok(m6id)
     }
 }

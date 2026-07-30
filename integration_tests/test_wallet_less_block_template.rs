@@ -4,8 +4,8 @@ use bip300301_enforcer_lib::bins::CommandExt as _;
 use futures::channel::mpsc;
 
 use crate::{
-    integration_test::{activate_sidechain, propose_sidechain},
-    setup::{DummySidechain, EnforcerWallet, Mode, PreSetup, SetupOpts},
+    mine::mine_gbt_check,
+    setup::{EnforcerWallet, Mode, PreSetup, SetupOpts},
 };
 
 pub async fn test_wallet_less_block_template(setup: PreSetup) -> anyhow::Result<()> {
@@ -46,12 +46,14 @@ pub async fn test_wallet_less_block_template(setup: PreSetup) -> anyhow::Result<
         "this test must run against a node without `txindex`, but the node reports: {index_info}"
     );
 
-    let () = propose_sidechain::<DummySidechain>(&mut post_setup).await?;
-
-    // Activation needs the templates to carry an M2 ack for the proposal in
-    // each of the next blocks. If the coinbase were wrong, the
-    // sidechain would never activate.
-    let () = activate_sidechain::<DummySidechain>(&mut post_setup).await?;
+    // Mine a few blocks from the enforcer's own template server: if the block
+    // producer needed a wallet or `txindex`, template production or submission
+    // would fail here.
+    let () = mine_gbt_check::<_, std::convert::Infallible>(&mut post_setup, 3, |_| Ok(()))
+        .await
+        .map_err(|err| match err {
+            either::Either::Left(err) => anyhow::anyhow!("mine_gbt failed: {err}"),
+        })?;
 
     drop(post_setup);
     Ok(())
