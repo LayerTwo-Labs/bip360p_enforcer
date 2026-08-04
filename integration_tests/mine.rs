@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use bip300301_enforcer_lib::{
+use bitcoin::Address;
+use connectrpc::ConnectError;
+use cusf_enforcer_lib::{
     bins::{CommandError, CommandExt, SignetMiner},
     proto::{
         self, ToStatus,
@@ -13,8 +15,6 @@ use bip300301_enforcer_lib::{
         },
     },
 };
-use bitcoin::Address;
-use connectrpc::ConnectError;
 use either::Either;
 use thiserror::Error;
 

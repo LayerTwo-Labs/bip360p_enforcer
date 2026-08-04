@@ -9,18 +9,18 @@ use std::{
 };
 
 use anyhow::anyhow;
-use bip300301_enforcer_lib::{
+use bitcoin::Address;
+use connectrpc::{
+    client::{ClientConfig, HttpClient},
+    error::ErrorCode,
+};
+use cusf_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
         self,
         mainchain::GetChainTipRequest,
         mainchain_service::{MiningServiceClient, ValidatorServiceClient, WalletServiceClient},
     },
-};
-use bitcoin::Address;
-use connectrpc::{
-    client::{ClientConfig, HttpClient},
-    error::ErrorCode,
 };
 use futures::channel::mpsc;
 use reserve_port::ReservedPort;
@@ -70,7 +70,7 @@ impl SignetSetup {
             .into_script();
         let signet_challenge_addr =
             bitcoin::Address::from_script(&cpk.p2wpkh_script_code(), &bitcoin::params::SIGNET)?;
-        let signet_magic = bip300301_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
+        let signet_magic = cusf_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
         tracing::info!(
             signet_challenge = %hex::encode(signet_challenge.as_bytes()),
             %signet_magic,
@@ -137,32 +137,6 @@ impl SignetSetup {
             .run_utf8()
             .await?;
         tracing::debug!(%getaddressinfo_output);
-        Ok(())
-    }
-
-    async fn calibrate_signet(&self, signet_miner: &mut bins::SignetMiner) -> anyhow::Result<()> {
-        let calibrate_output = signet_miner
-            .command("calibrate", vec!["--seconds=1"])
-            .run_utf8()
-            .await?;
-        let nbits_hex = {
-            calibrate_output
-                .strip_prefix("nbits=")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Missing nbits prefix from calibration output: `{calibrate_output}`",
-                    )
-                })?
-                .split_once(" ")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Missing nbits suffix from calibration output: `{calibrate_output}`",
-                    )
-                })?
-                .0
-                .to_owned()
-        };
-        signet_miner.nbits = Some(hex::FromHex::from_hex(&nbits_hex)?);
         Ok(())
     }
 
@@ -267,7 +241,7 @@ pub fn new_bitcoind(
         listen_port: reserved_ports.bitcoind_listen.port(),
         network: network.into(),
         onion_ports: None,
-        rpc_user: "drivechain".to_owned(),
+        rpc_user: "integrationtest".to_owned(),
         rpc_pass: "integrationtesting".to_owned(),
         rpc_port: reserved_ports.bitcoind_rpc.port(),
         rpc_host: "127.0.0.1".to_owned(),
@@ -323,6 +297,49 @@ pub async fn wait_for_port(
         Ok(Err(e)) => Err(e), // Propagate inner error (though our loop logic makes this unlikely)
         Err(_) => Err(anyhow!(
             "Timeout waiting for port {host}:{port} to open after {timeout_duration:?}"
+        )),
+    }
+}
+
+/// Inverse of [`wait_for_port`]: wait until nothing is listening on a port
+/// anymore. `AbortOnDrop`'s `Drop` impl only calls `JoinHandle::abort`, which
+/// schedules cancellation but doesn't guarantee the underlying child process
+/// (and the port it holds) is actually gone by the time `drop` returns -- so
+/// a kill immediately followed by a respawn on the same port can race the
+/// old process's teardown. Poll for the port to actually free up instead of
+/// guessing at a fixed delay.
+pub async fn wait_for_port_free(
+    host: &str,
+    port: u16,
+    timeout_duration: Duration,
+) -> anyhow::Result<()> {
+    let target_addr_str = format!("{host}:{port}");
+    let target_addr: SocketAddr = target_addr_str
+        .parse()
+        .map_err(|_| anyhow!("Invalid address format {host}:{port}"))?;
+    let check_interval = Duration::from_millis(50);
+
+    let task = async {
+        loop {
+            match TcpStream::connect(target_addr).await {
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return,
+                _ => {
+                    tracing::trace!(
+                        "Port {port} on {host} still held, waiting for it to free up..."
+                    );
+                    sleep(check_interval).await;
+                }
+            }
+        }
+    };
+
+    match timeout(timeout_duration, task).await {
+        Ok(()) => {
+            tracing::debug!("Port {port} on {host} is free.");
+            Ok(())
+        }
+        Err(_) => Err(anyhow!(
+            "Timeout waiting for port {host}:{port} to free up after {timeout_duration:?}"
         )),
     }
 }
@@ -393,10 +410,16 @@ pub async fn wait_for_validator_synced(
 
 /// Running tasks, aborted on drop
 pub struct Tasks {
-    // MUST be dropped before electrs and bitcoind
-    _enforcer: AbortOnDrop<()>,
-    // MUST be dropped before bitcoind
-    _electrs: AbortOnDrop<()>,
+    // MUST be dropped before electrs and bitcoind. `Option` (rather than the
+    // task unconditionally present) so `kill_enforcer`/`restart_enforcer` can
+    // explicitly drop the old process before spawning a replacement bound to
+    // the same ports.
+    _enforcer: Option<AbortOnDrop<()>>,
+    // MUST be dropped before bitcoind. Also `Option`, for the same reason as
+    // `_enforcer` -- electrs sometimes needs restarting independently (it's
+    // known to panic on some reorgs; an unrelated, pre-existing limitation
+    // of the pinned binary, not the enforcer).
+    _electrs: Option<AbortOnDrop<()>>,
     _bitcoind: AbortOnDrop<()>,
 }
 
@@ -451,8 +474,6 @@ pub enum BitcoindKind {
     #[default]
     Patched,
     Unpatched,
-    /// jbride/bitcoin#2 head (`cryptoquick:p2mr`) — P2MR mempool + consensus peer.
-    P2mr,
 }
 
 fn bitcoind_path(
@@ -462,7 +483,6 @@ fn bitcoind_path(
     match bitcoind_kind {
         BitcoindKind::Patched => bin_paths.bitcoind(),
         BitcoindKind::Unpatched => bin_paths.bitcoind_unpatched(),
-        BitcoindKind::P2mr => bin_paths.bitcoind_p2mr(),
     }
 }
 
@@ -472,7 +492,7 @@ fn bitcoind_path(
 pub enum EnforcerWallet {
     #[default]
     Enabled,
-    /// Skip electrs and run the enforcer as validator-only (BIP 360 trials).
+    /// Skip electrs and run the enforcer as validator-only.
     Disabled,
 }
 
@@ -607,25 +627,27 @@ impl PostSetup {
                 .parse::<Address<_>>()?
                 .require_network(bitcoind.network)?
         };
-        let mut signet_miner = if let Some(signet_setup) = signet_setup.as_ref() {
-            let mut signet_miner = bins::SignetMiner {
+        let mut signet_miner = if signet_setup.is_some() {
+            Some(bins::SignetMiner {
                 path: bin_paths.signet_miner()?.clone(),
                 bitcoin_cli: bitcoin_cli.clone(),
                 bitcoin_util: bin_paths.bitcoin_util()?.clone(),
                 block_interval: None,
                 coinbase_recipient: Some(mining_address.clone()),
                 debug: false,
+                // `None` makes the miner pass `--min-nbits`, grinding at
+                // signet's floor difficulty. Calibrating for ~1s/block here
+                // instead adds ~1s of pure grinding per mined block, which
+                // dominates signet test runtime.
                 nbits: None,
                 getblocktemplate_command: None,
                 coinbasetxn: false,
-            };
-            let () = signet_setup.calibrate_signet(&mut signet_miner).await?;
-            Some(signet_miner)
+            })
         } else {
             None
         };
-        // BIP 360 trials fund P2MR outputs from a mature coinbase (COINBASE_MATURITY
-        // is 100); validator-only harnesses mine 101 blocks up front.
+        // Validator-only harnesses fund spends from a mature coinbase
+        // (COINBASE_MATURITY is 100), so they mine 101 blocks up front.
         let initial_blocks = if enable_wallet { 1 } else { 101 };
         tracing::debug!(%mining_address, initial_blocks, "Mining initial blocks");
         if let Some(signet_miner) = signet_miner.as_ref() {
@@ -654,7 +676,10 @@ impl PostSetup {
             let electrs = Electrs {
                 path: bin_paths.electrs()?.clone(),
                 db_dir: dirs.electrs_dir.clone(),
-                auth: ("drivechain".to_owned(), "integrationtesting".to_owned()),
+                auth: (
+                    "integrationtest".to_owned(),
+                    "integrationtesting".to_owned(),
+                ),
                 daemon_dir: bitcoind.data_dir.join("path"),
                 daemon_rpc_port: bitcoind.rpc_port,
                 electrum_rpc_port: reserved_ports.electrs_electrum_rpc.port(),
@@ -680,10 +705,9 @@ impl PostSetup {
             tracing::debug!("Skipping electrs (validator-only enforcer)");
             (0, 0, tokio::spawn(async {}).into())
         };
-        // Start BIP300301 Enforcer
-        tracing::debug!("Starting bip300301_enforcer");
+        tracing::debug!("Starting cusf_enforcer");
         let enforcer = Enforcer {
-            path: bin_paths.bip300301_enforcer()?.clone(),
+            path: bin_paths.cusf_enforcer()?.clone(),
             data_dir: dirs.enforcer_dir.clone(),
             enable_mempool: mode.enable_mempool(),
             enable_wallet,
@@ -710,8 +734,8 @@ impl PostSetup {
             },
         );
         let tasks = Tasks {
-            _enforcer: enforcer_task,
-            _electrs: electrs_task,
+            _enforcer: Some(enforcer_task),
+            _electrs: Some(electrs_task),
             _bitcoind: bitcoind_task,
         };
         // Wait for enforcer gRPC port to open
@@ -762,6 +786,162 @@ impl PostSetup {
             directories: dirs.clone(),
             reserved_ports,
         })
+    }
+
+    /// Kill the running enforcer process (simulating a crash) without
+    /// respawning it, and wait until its gRPC port is confirmed free. Used
+    /// together with [`Self::restart_enforcer`] so a reorg can be driven
+    /// entirely on bitcoind while the enforcer is down, forcing it to catch
+    /// up over more than one block on the next restart rather than observing
+    /// the reorg live via its ZMQ-fed background sync task.
+    pub async fn kill_enforcer(&mut self) -> anyhow::Result<()> {
+        if let Some(old) = self.tasks._enforcer.take() {
+            drop(old);
+        }
+        wait_for_port_free(
+            "127.0.0.1",
+            self.reserved_ports.enforcer_serve_grpc.port(),
+            Duration::from_secs(10),
+        )
+        .await
+    }
+
+    /// Respawn the enforcer from the same data-dir and ports (killing it
+    /// first, if not already killed via [`Self::kill_enforcer`]).
+    /// bitcoind/electrs are left running throughout. Existing gRPC clients
+    /// reconnect automatically once the new process is listening.
+    pub async fn restart_enforcer<EnforcerArg, EnforcerArgs>(
+        &mut self,
+        bin_paths: &BinPaths,
+        enforcer_args: EnforcerArgs,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> anyhow::Result<()>
+    where
+        EnforcerArg: AsRef<OsStr>,
+        EnforcerArgs: IntoIterator<Item = EnforcerArg>,
+    {
+        self.kill_enforcer().await?;
+
+        let enforcer = Enforcer {
+            path: bin_paths.cusf_enforcer()?.clone(),
+            data_dir: self.directories.enforcer_dir.clone(),
+            enable_mempool: self.mode.enable_mempool(),
+            enable_wallet: true,
+            enable_block_template_server: matches!(self.mode, Mode::GetBlockTemplate),
+            coinbase_recipient: None,
+            node_blocks_dir: None,
+            node_rpc_user: self
+                .bitcoin_cli
+                .rpc_user
+                .clone()
+                .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_user"))?,
+            node_rpc_pass: self
+                .bitcoin_cli
+                .rpc_pass
+                .as_ref()
+                .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?
+                .expose()
+                .to_owned(),
+            node_rpc_port: self.bitcoin_cli.rpc_port,
+            node_zmq_sequence_port: self.reserved_ports.bitcoind_zmq_sequence.port(),
+            serve_grpc_port: self.reserved_ports.enforcer_serve_grpc.port(),
+            serve_rpc_port: self.reserved_ports.enforcer_serve_rpc.port(),
+            wallet_electrum_rpc_port: self.reserved_ports.electrs_electrum_rpc.port(),
+            wallet_electrum_http_port: self.reserved_ports.electrs_electrum_http.port(),
+        };
+        let enforcer_task = enforcer.spawn_command_with_args(
+            [(
+                "RUST_LOG",
+                "h2=info,hyper_util=info,jsonrpsee-client=debug,jsonrpsee-http=debug,connectrpc=debug,trace",
+            )],
+            enforcer_args,
+            move |err| {
+                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+            },
+        );
+        self.tasks._enforcer = Some(enforcer_task);
+
+        wait_for_port(
+            "127.0.0.1",
+            enforcer.serve_grpc_port,
+            Duration::from_secs(10),
+        )
+        .await
+        .map_err(|e| anyhow!("Failed waiting for restarted enforcer gRPC port: {e}"))?;
+
+        Ok(())
+    }
+
+    /// Kill electrs without respawning it, and wait until its ports are
+    /// confirmed free.
+    pub async fn kill_electrs(&mut self) -> anyhow::Result<()> {
+        if let Some(old) = self.tasks._electrs.take() {
+            drop(old);
+        }
+        wait_for_port_free(
+            "127.0.0.1",
+            self.reserved_ports.electrs_electrum_http.port(),
+            Duration::from_secs(10),
+        )
+        .await
+    }
+
+    /// Kill electrs (if not already killed via [`Self::kill_electrs`]) and
+    /// respawn it from a freshly wiped db-dir. electrs (the pinned v3.2.0
+    /// binary) is known to panic mid-index on some reorgs -- an unrelated,
+    /// pre-existing limitation, not the enforcer -- and can't resume
+    /// cleanly from a state it panicked while indexing.
+    pub async fn restart_electrs(
+        &mut self,
+        bin_paths: &BinPaths,
+        res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+    ) -> anyhow::Result<()> {
+        self.kill_electrs().await?;
+
+        std::fs::remove_dir_all(&self.directories.electrs_dir).ok();
+        std::fs::create_dir_all(&self.directories.electrs_dir)?;
+
+        let electrs = Electrs {
+            path: bin_paths.electrs()?.clone(),
+            db_dir: self.directories.electrs_dir.clone(),
+            auth: (
+                self.bitcoin_cli
+                    .rpc_user
+                    .clone()
+                    .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_user"))?,
+                self.bitcoin_cli
+                    .rpc_pass
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("bitcoin_cli has no rpc_pass"))?
+                    .expose()
+                    .to_owned(),
+            ),
+            daemon_dir: self.directories.bitcoin_dir.join("path"),
+            daemon_rpc_port: self.bitcoin_cli.rpc_port,
+            electrum_rpc_port: self.reserved_ports.electrs_electrum_rpc.port(),
+            electrum_http_port: self.reserved_ports.electrs_electrum_http.port(),
+            monitoring_port: self.reserved_ports.electrs_monitoring.port(),
+            network: self.network.into(),
+            // Only relevant for signet, which this helper isn't used by yet.
+            signet_magic: None,
+        };
+        let electrs_task = electrs.spawn_command_with_args::<String, String, _, _, _>([], [], {
+            let res_tx = res_tx.clone();
+            move |err| {
+                let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+            }
+        });
+        self.tasks._electrs = Some(electrs_task);
+
+        wait_for_port(
+            "127.0.0.1",
+            electrs.electrum_http_port,
+            Duration::from_secs(60),
+        )
+        .await
+        .map_err(|e| anyhow!("Failed waiting for restarted electrs http port: {e}"))?;
+
+        Ok(())
     }
 }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "=== BIP300301 Enforcer Performance Analysis ==="
+echo "=== cusf_enforcer Performance Analysis ==="
 echo
 
 # Create output directory
@@ -14,12 +14,12 @@ echo "1. Starting enforcer..."
 cd ..
 
 # Make sure the binary exists
-if [ ! -f "./target/release/bip300301_enforcer" ]; then
+if [ ! -f "./target/release/cusf_enforcer" ]; then
     echo "   ERROR: Binary not found. Building first..."
     cargo build --release
 fi
 
-./target/release/bip300301_enforcer --data-dir ./datadir --node-rpc-addr=localhost:38332 --node-rpc-user=user --node-rpc-pass=password --enable-mempool > trace_results/enforcer.log 2>&1 &
+./target/release/cusf_enforcer --data-dir ./datadir --node-rpc-addr=localhost:38332 --node-rpc-user=user --node-rpc-pass=password --enable-mempool > trace_results/enforcer.log 2>&1 &
 ENFORCER_PID=$!
 echo "   Enforcer PID: $ENFORCER_PID"
 
@@ -27,7 +27,7 @@ echo "   Enforcer PID: $ENFORCER_PID"
 sleep 5
 
 # Find the actual enforcer process (not the shell)
-ACTUAL_PID=$(pgrep -f "bip300301_enforcer.*--data-dir")
+ACTUAL_PID=$(pgrep -f "cusf_enforcer.*--data-dir")
 if [ -n "$ACTUAL_PID" ]; then
     echo "   Found actual enforcer PID: $ACTUAL_PID"
     ENFORCER_PID=$ACTUAL_PID

@@ -211,10 +211,9 @@ impl<T> OnceLockExt for OnceLock<T> {
 pub struct BinPaths {
     bitcoind: OnceLock<PathBuf>,
     bitcoind_unpatched: OnceLock<PathBuf>,
-    bitcoind_p2mr: OnceLock<PathBuf>,
     bitcoin_cli: OnceLock<PathBuf>,
     bitcoin_util: OnceLock<PathBuf>,
-    bip300301_enforcer: OnceLock<PathBuf>,
+    cusf_enforcer: OnceLock<PathBuf>,
     electrs: OnceLock<PathBuf>,
     signet_miner: OnceLock<PathBuf>,
 }
@@ -233,11 +232,6 @@ impl BinPaths {
             .get_or_try_init_from_env("BITCOIND_UNPATCHED")
     }
 
-    /// P2MR-capable Core (jbride/bitcoin#2 head = `cryptoquick:p2mr`).
-    pub fn bitcoind_p2mr(&self) -> Result<&PathBuf, VarError> {
-        self.bitcoind_p2mr.get_or_try_init_from_env("BITCOIND_P2MR")
-    }
-
     pub fn bitcoin_cli(&self) -> Result<&PathBuf, VarError> {
         self.bitcoin_cli.get_or_try_init_from_env("BITCOIN_CLI")
     }
@@ -246,9 +240,9 @@ impl BinPaths {
         self.bitcoin_util.get_or_try_init_from_env("BITCOIN_UTIL")
     }
 
-    pub fn bip300301_enforcer(&self) -> Result<&PathBuf, VarError> {
-        self.bip300301_enforcer
-            .get_or_try_init_from_env_or("BIP300301_ENFORCER", "./target/debug/bip300301_enforcer")
+    pub fn cusf_enforcer(&self) -> Result<&PathBuf, VarError> {
+        self.cusf_enforcer
+            .get_or_try_init_from_env_or("CUSF_ENFORCER", "./target/debug/cusf_enforcer")
     }
 
     pub fn electrs(&self) -> Result<&PathBuf, VarError> {
@@ -671,12 +665,14 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
-    pub fn new_bitcoin_cli(&self, path: PathBuf) -> bip300301_enforcer_lib::bins::BitcoinCli {
-        bip300301_enforcer_lib::bins::BitcoinCli {
+    pub fn new_bitcoin_cli(&self, path: PathBuf) -> cusf_enforcer_lib::bins::BitcoinCli {
+        cusf_enforcer_lib::bins::BitcoinCli {
             path,
             network: self.network,
             rpc_user: Some(self.rpc_user.clone()),
-            rpc_pass: Some(self.rpc_pass.clone()),
+            rpc_pass: Some(cusf_enforcer_lib::cli::SecretString::new(
+                self.rpc_pass.clone(),
+            )),
             rpc_cookie_path: None,
             rpc_port: self.rpc_port,
             rpc_host: self.rpc_host.clone(),
@@ -700,6 +696,10 @@ impl Bitcoind {
     {
         let mut default_args = vec![
             "-acceptnonstdtxn".to_owned(),
+            // Skip wallet sqlite fsyncs; they otherwise dominate wallet-heavy
+            // test runtime. Only unsafe on OS crash/power loss, which never
+            // matters for throwaway test datadirs.
+            "-unsafesqlitesync=1".to_owned(),
             format!("-chain={}", self.network.to_core_arg()),
             format!("-datadir={}", self.data_dir.display()),
             format!("-bind=127.0.0.1:{}", self.listen_port),

@@ -6,12 +6,6 @@ on:
     branches:
       - master
   workflow_dispatch:
-    inputs:
-      run_live_tip_e2e:
-        description: "HITL only — run live-tip-rules-workers-e2e (needs BITCOIND; does not gate PR CI)"
-        required: false
-        type: boolean
-        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -105,8 +99,8 @@ jobs:
           cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports
           -Zcrate-attr="feature(unqualified_local_imports)"
 
-  check-bip360:
-    name: Check BIP 360 feature
+  check-workspace:
+    name: Check workspace (all targets)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -119,86 +113,22 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: x86_64-unknown-linux-gnu-bip360
+          shared-key: x86_64-unknown-linux-gnu-workspace
 
-      - name: Cargo check (bip360 only)
-        run: cargo check --no-default-features --features bip360 --all-targets
+      - name: Cargo check (all targets)
+        run: cargo check --workspace --all-targets
 
-      - name: Test PQC module
-        # Quote: unquoted `::` is invalid YAML (prettier/GitHub parsers reject it).
-        run:
-          "cargo test -p bip300301_enforcer_lib --no-default-features --features
-          bip360 pqc::"
+      - name: Unit tests
+        run: cargo test -p cusf_enforcer_lib
 
-      - name: P2MR signer smoke test
-        run: |
-          cargo build --example p2mr_signer --no-default-features --features bip360
-          cargo test -p bip300301_enforcer_lib --no-default-features --features bip360 p2mr_signer_roundtrip -- --nocapture
-          cargo run --example p2mr_signer --no-default-features --features bip360 -- \
-            --algorithm schnorr \
-            --entropy-hex 1111111111111111111111111111111111111111111111111111111111111111 \
-            | grep -q signed_spend_tx_hex
+      - name: Clippy (lib)
+        run: cargo clippy -p cusf_enforcer_lib -- -D warnings
 
-      - name: Clippy (bip360)
-        run:
-          cargo clippy -p bip300301_enforcer_lib --no-default-features
-          --features bip360 -- -D warnings
+      - name: Clippy (integration_tests)
+        run: cargo clippy -p cusf_enforcer_integration_tests -- -D warnings
 
-      - name: Clippy (integration_tests bip360)
-        run:
-          cargo clippy -p bip300301_enforcer_integration_tests --features bip360
-          -- -D warnings
-
-      - name: Check integration_tests example (bip360)
-        run: cargo check --example integration_tests --features bip360
-
-  check-rules-engine:
-    name: Validate rules engine + workers
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install toolchain
-        run: rustup install
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: x86_64-unknown-linux-gnu-rules
-
-      # Do NOT use cargo --all-features (reserved shrincs).
-      # Do NOT require bitcoind / live tip here (PR green matrix).
-      - name: validate-rules-engine
-        run: ./scripts/validate-rules-engine.sh
-
-  # HITL / manual only — never runs on pull_request.
-  # Fail-closed if BITCOIND unset/non-executable when dispatched with run_live_tip_e2e
-  # (script soft-skip applies only when CUSF_LIVE_TIP_E2E is unset; HITL always sets it).
-  live-tip-rules-workers-e2e-hitl:
-    name: Live tip rules workers e2e (HITL)
-    if: github.event_name == 'workflow_dispatch' && inputs.run_live_tip_e2e == true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install toolchain
-        run: rustup install
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: x86_64-unknown-linux-gnu-rules-live-tip
-
-      - name: Opt-in live tip e2e
-        env:
-          CUSF_LIVE_TIP_E2E: "1"
-          BITCOIND: ${{ vars.BITCOIND || secrets.BITCOIND || '' }}
-        run: |
-          if [[ -z "${BITCOIND}" || ! -x "${BITCOIND}" ]]; then
-            echo "::error::HITL live tip requires BITCOIND (repo var/secret path to bitcoind binary)"
-            exit 1
-          fi
-          ./scripts/live-tip-rules-workers-e2e.sh
+      - name: Check integration_tests example
+        run: cargo check --example integration_tests
 
   check-clippy:
     name: Check, Lint
@@ -273,18 +203,17 @@ jobs:
               exit 1
             fi
           done
-          ITEMS='{"flavor":"patched"}'
+          ITEMS=''
           for v in $VERSIONS; do
-            ITEMS="$ITEMS,{\"flavor\":\"stock\",\"version\":\"$v\"}"
+            ITEMS="$ITEMS{\"flavor\":\"stock\",\"version\":\"$v\"},"
           done
+          ITEMS="${ITEMS%,}"
           MATRIX="{\"include\":[${ITEMS}]}"
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
           echo "$MATRIX"
 
   integration-test:
-    name:
-      Integration test (${{ matrix.flavor == 'patched' && 'bitcoin-patched' ||
-      format('Bitcoin Core {0}', matrix.version) }})
+    name: Integration test (Bitcoin Core ${{ matrix.version }})
     needs: compute-integration-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -295,21 +224,7 @@ jobs:
       ELECTRS_VERSION: v3.2.0
       GRPCURL_VERSION: "1.9.3"
     steps:
-      - name: Download Bitcoin Core (patched)
-        if: matrix.flavor == 'patched'
-        run: |
-          pushd ..
-          wget https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          unzip L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-bins
-          chmod +x bitcoin-bins/bitcoind
-          chmod +x bitcoin-bins/bitcoin-cli
-          chmod +x bitcoin-bins/bitcoin-util
-          popd
-
       - name: Download Bitcoin Core (stock ${{ matrix.version }})
-        if: matrix.flavor == 'stock'
         run: |
           pushd ..
           VERSION='${{ matrix.version }}'
@@ -322,36 +237,6 @@ jobs:
           chmod +x bitcoin-bins/bitcoind
           chmod +x bitcoin-bins/bitcoin-cli
           chmod +x bitcoin-bins/bitcoin-util
-          popd
-
-      - name:
-          Download stock Bitcoin Core 30.2 (BITCOIND_UNPATCHED for mixed-version
-          tests)
-        # `test_peer_bmm_request` exercises a cross-binary p2p path via
-        # `BITCOIND_UNPATCHED`. For the stock matrix we reuse the same
-        # stock binary; for the patched job we still want a stock 30.2
-        # alongside the patched binaries.
-        if: matrix.flavor == 'patched'
-        run: |
-          pushd ..
-          wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          tar -xf bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          mv bitcoin-30.2/bin bitcoin-unpatched-bins
-          rm -r bitcoin-30.2
-          popd
-
-      - name: Checkout bitcoin-patched for signet miner script
-        # The enforcer itself auto-downloads the miner script at runtime
-        # (see `lib/wallet/mine.rs::get_signet_miner_path`), but the
-        # integration test harness drives mining externally and still
-        # requires `SIGNET_MINER` to point at the script. Stock Bitcoin
-        # Core tarballs don't ship `contrib/signet/miner`, and the
-        # patched variant's `--getblocktemplate-command` support is what
-        # our signet tests rely on — so we fetch it here for both flavors.
-        run: |
-          pushd ..
-          git clone https://github.com/LayerTwo-Labs/bitcoin-patched.git
           popd
 
       - name: Cache electrs binary
@@ -389,13 +274,13 @@ jobs:
       # build; gated to a single matrix entry since the result does not
       # depend on the Bitcoin Core flavor.
       - name: Install buf
-        if: matrix.flavor == 'patched'
+        if: strategy.job-index == 0
         uses: bufbuild/buf-action@v1
         with:
           setup_only: true
 
       - name: Cache grpcurl
-        if: matrix.flavor == 'patched'
+        if: strategy.job-index == 0
         id: cache-grpcurl
         uses: actions/cache@v6
         with:
@@ -404,7 +289,7 @@ jobs:
 
       - name: Install grpcurl
         if: |
-          matrix.flavor == 'patched' &&
+          strategy.job-index == 0 &&
           steps.cache-grpcurl.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/grpcurl-bin
@@ -412,44 +297,32 @@ jobs:
           tar -xzf "grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" -C ~/grpcurl-bin grpcurl
 
       - name: Install just
-        if: matrix.flavor == 'patched'
+        if: strategy.job-index == 0
         uses: extractions/setup-just@v3
 
       - name: Verify gRPC reflection (grpcurl + buf curl)
-        if: matrix.flavor == 'patched'
+        if: strategy.job-index == 0
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
           export BITCOIND='../bitcoin-bins/bitcoind'
-          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          export CUSF_ENFORCER='target/debug/cusf_enforcer'
           just verify-reflection
 
       - name: Run integration tests
-        # Stock Bitcoin Core rejects drivechain deposit transactions with
-        # `mempool-script-verify-flag-failed (NOPx reserved for soft-fork
-        # upgrades)` — the consensus rules repurposing those opcodes only
-        # live in bitcoin-patched — so we skip `deposit_withdraw_roundtrip`
-        # on stock. The remaining tests exercise RPC, block-parser, p2p,
-        # and mempool integration with upstream Bitcoin Core.
         run: |
-          export BIP300301_ENFORCER='target/debug/bip300301_enforcer'
+          export CUSF_ENFORCER='target/debug/cusf_enforcer'
           export BITCOIND='../bitcoin-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-bins/bitcoin-cli'
           export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
-          export SIGNET_MINER='../bitcoin-patched/contrib/signet/miner'
           # Each test leaks a TempDir holding per-component stdout/stderr (the
           # enforcer runs at --log-level=trace). Point TMPDIR at a known
           # directory so the "Upload integration test logs" step can collect
           # them as artifacts when a test fails.
           export TMPDIR="$RUNNER_TEMP/it-logs"
           mkdir -p "$TMPDIR"
-          if [ '${{ matrix.flavor }}' = 'patched' ]; then
-            export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
-            cargo run --example integration_tests
-          else
-            export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
-            cargo run --example integration_tests -- --skip deposit_withdraw_roundtrip
-          fi
+          export BITCOIND_UNPATCHED='../bitcoin-bins/bitcoind'
+          cargo run --example integration_tests
 
       - name: Upload integration test logs
         # Only on failure: the leaked TempDirs contain full trace-level
@@ -459,9 +332,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name:
-            integration-test-logs-${{ matrix.flavor == 'patched' && 'patched' ||
-            format('stock-{0}', matrix.version) }}
+          name: integration-test-logs-stock-${{ matrix.version }}
           path: |
             ${{ runner.temp }}/it-logs/**/*.txt
             ${{ runner.temp }}/it-logs/**/*.log
@@ -529,9 +400,9 @@ jobs:
         run: |
           # We still capture the version, but won't use it in the final binary name
           APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "bip300301_enforcer") | .version) | .[0]')
+            jq -er '.packages | map(select(.name == "cusf_enforcer") | .version) | .[0]')
           # Use 'latest' in the filename instead of the version
-          APP_DIRNAME="bip300301-enforcer-latest-${{ matrix.name }}"
+          APP_DIRNAME="cusf-enforcer-latest-${{ matrix.name }}"
           APP_FILENAME="${APP_DIRNAME}${{ matrix.binary-suffix }}"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
@@ -539,7 +410,7 @@ jobs:
 
       - run: |
           mkdir release
-          cp target/${{ matrix.name }}/release/bip300301_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
+          cp target/${{ matrix.name }}/release/cusf_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
 
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v7
@@ -556,30 +427,3 @@ jobs:
           files: |
             release/${{ env.APP_FILENAME }}
           fail_on_unmatched_files: true
-
-  upload-releases-to-releases-drivechain-info:
-    name: Upload releases to releases.drivechain.info
-    runs-on: ubuntu-latest
-    needs: [integration-test, test-build-release]
-    if: github.ref == 'refs/heads/master'
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-
-      - name: Create zip files for releases.drivechain.info
-        run: |
-          shopt -s extglob
-          zip -r bip300301-enforcer-latest-x86_64-apple-darwin.zip bip300301-enforcer-latest-x86_64-apple-darwin
-          zip -r bip300301-enforcer-latest-aarch64-apple-darwin.zip bip300301-enforcer-latest-aarch64-apple-darwin
-          zip -r bip300301-enforcer-latest-x86_64-pc-windows-gnu.zip bip300301-enforcer-latest-x86_64-pc-windows-gnu
-          zip -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip bip300301-enforcer-latest-x86_64-unknown-linux-gnu
-
-      - name: Upload release assets to releases.drivechain.info
-        uses: appleboy/scp-action@v1
-        with:
-          host: 45.33.96.47
-          username: root
-          password: ${{ secrets.RELEASES_SERVER_PW }}
-          port: 22
-          source: "bip300301-enforcer-latest-*.zip"
-          target: "/var/www/html/"

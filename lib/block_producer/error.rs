@@ -80,13 +80,57 @@ impl ToStatus for FetchTransaction {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+#[error(
+    "failed to fetch block template{}",
+    .template_error.as_deref().map(|err| format!(": {err}")).unwrap_or_default()
+)]
+pub struct GetBlockTemplate {
+    #[source]
+    pub source: JsonRpcError,
+    /// From `BlockProducer::last_gbt_error`
+    pub template_error: Option<String>,
+}
+
+impl ToStatus for GetBlockTemplate {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match &self.source {
+            // The enforcer's own template server only comes up once the
+            // initial mempool sync is done, so a transport error usually
+            // means it is still starting.
+            JsonRpcError::Transport(_) => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::Unavailable)
+            }
+            _ => StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum SelectBlockTxs {
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
+    #[error(transparent)]
+    GetBlockTemplate(#[from] GetBlockTemplate),
     #[error("failed to fetch transaction (`{txid}`)")]
     FetchTransaction {
         txid: bitcoin::Txid,
         source: FetchTransaction,
+    },
+    #[error("failed to decode transaction `{txid}` from the block template")]
+    DecodeTemplateTransaction {
+        txid: bitcoin::Txid,
+        source: bitcoin::consensus::encode::Error,
+    },
+    /// The block template was built on a different tip than the one the
+    /// validator has caught up to. Building on the validator's tip while using
+    /// the template's tx set produces a block Core rejects as `inconclusive`,
+    /// so bail out and let the caller retry once the two tips agree.
+    #[error(
+        "block template is built on `{template_tip}`, but the validator tip is `{validator_tip}`"
+    )]
+    TemplateTipMismatch {
+        template_tip: bitcoin::BlockHash,
+        validator_tip: bitcoin::BlockHash,
     },
 }
 
@@ -94,8 +138,16 @@ impl ToStatus for SelectBlockTxs {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
+            Self::GetBlockTemplate(err) => err.builder(),
             Self::FetchTransaction { source, .. } => {
                 StatusBuilder::with_code(self, source.builder())
+            }
+            Self::DecodeTemplateTransaction { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::Internal)
+            }
+            // Retryable: whichever side is behind just needs to catch up.
+            Self::TemplateTipMismatch { .. } => {
+                StatusBuilder::new(self).code(connectrpc::ErrorCode::FailedPrecondition)
             }
         }
     }
@@ -124,8 +176,37 @@ impl ToStatus for FinalizeBlock {
     }
 }
 
+/// Waiting for the validator's connect-block pipeline to process a block
+/// that was just submitted to Bitcoin Core.
+#[derive(Debug, Diagnostic, Error)]
+pub enum AwaitBlockConnection {
+    #[error(
+        "timed out waiting for validator to connect block `{block_hash}` after {timeout:?}: \
+         the enforcer has fallen behind Bitcoin Core, or rejected the block"
+    )]
+    Timeout {
+        block_hash: bitcoin::BlockHash,
+        timeout: std::time::Duration,
+    },
+    #[error(transparent)]
+    TryGetBlockInfos(#[from] crate::validator::TryGetBlockInfosError),
+}
+
+impl ToStatus for AwaitBlockConnection {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            err @ Self::Timeout { .. } => {
+                StatusBuilder::new(err).code(connectrpc::ErrorCode::DeadlineExceeded)
+            }
+            Self::TryGetBlockInfos(_) => StatusBuilder::new(self),
+        }
+    }
+}
+
 #[derive(Debug, Diagnostic, Error)]
 pub enum Mine {
+    #[error(transparent)]
+    AwaitBlockConnection(#[from] AwaitBlockConnection),
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
     #[error(transparent)]
@@ -140,6 +221,7 @@ pub enum Mine {
 impl ToStatus for Mine {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            Self::AwaitBlockConnection(err) => err.builder(),
             Self::BitcoinCoreRPC(err) => err.builder(),
             Self::EncodeBlock(err) => err.builder(),
             Self::FinalizeBlock(err) => err.builder(),
@@ -173,6 +255,8 @@ pub enum VerifyCanMine {
     #[error(transparent)]
     BitcoinCoreRPC(#[from] BitcoinCoreRPC),
     #[error(transparent)]
+    GetBlockTemplate(#[from] GetBlockTemplate),
+    #[error(transparent)]
     MissingBinary(#[from] MissingBinary),
     #[error("cannot generate more than one block on signet")]
     MultipleBlocksOnSignet,
@@ -195,6 +279,7 @@ impl ToStatus for VerifyCanMine {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::BitcoinCoreRPC(err) => err.builder(),
+            Self::GetBlockTemplate(err) => err.builder(),
             Self::MissingBinary(err) => err.builder(),
             Self::MultipleBlocksOnSignet => {
                 StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
@@ -231,6 +316,8 @@ impl ToStatus for GetSignetMinerPath {
 
 #[derive(Diagnostic, Debug, Error)]
 pub enum GenerateSignetBlock {
+    #[error(transparent)]
+    AwaitBlockConnection(#[from] AwaitBlockConnection),
     #[error("failed to fetch most recent block hash")]
     FetchMostRecentBlockHash(#[source] BitcoinCoreRPC),
     #[error(transparent)]
@@ -248,6 +335,7 @@ pub enum GenerateSignetBlock {
 impl ToStatus for GenerateSignetBlock {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
+            Self::AwaitBlockConnection(err) => err.builder(),
             Self::FetchMostRecentBlockHash(err) => StatusBuilder::with_code(self, err.builder()),
             Self::GetHeaderInfo(err) => err.builder(),
             Self::GetMainchainTip(err) => err.builder(),

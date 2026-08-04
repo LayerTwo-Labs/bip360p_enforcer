@@ -12,12 +12,12 @@
 # Requirements: bitcoind, grpcurl, buf, and a built enforcer binary.
 #
 # Overridable via environment:
-#   BIP300301_ENFORCER  path to enforcer binary (default: target/debug/...)
+#   CUSF_ENFORCER  path to enforcer binary (default: target/debug/...)
 #   BITCOIND            path to bitcoind (default: from PATH)
 
 set -euo pipefail
 
-ENFORCER="${BIP300301_ENFORCER:-target/debug/bip300301_enforcer}"
+ENFORCER="${CUSF_ENFORCER:-target/debug/cusf_enforcer}"
 BITCOIND="${BITCOIND:-bitcoind}"
 
 BITCOIND_RPC_PORT=18943

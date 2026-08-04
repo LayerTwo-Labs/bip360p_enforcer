@@ -93,7 +93,7 @@ impl ValidatorService for Server {
         let network_params = self.validator.network_params();
         Ok(Response::new(GetChainInfoResponse {
             network: network.into(),
-            activation_height: network_params.bip300_activation_height,
+            activation_height: network_params.activation_height,
         }))
     }
 

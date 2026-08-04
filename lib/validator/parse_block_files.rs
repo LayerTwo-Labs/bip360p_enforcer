@@ -840,7 +840,7 @@ mod tests {
         let mut bytes = REGTEST_MAGIC.to_vec();
         bytes.extend_from_slice(&0u32.to_le_bytes()); // size = 0, below the 80 byte header
         bytes.extend_from_slice(&[0u8; 80]); // a well-formed 80 byte header
-        let path = std::env::temp_dir().join("bip300_undersized_blk00000.dat");
+        let path = std::env::temp_dir().join("cusf_undersized_blk00000.dat");
         std::fs::File::create(&path)
             .unwrap()
             .write_all(&bytes)
@@ -858,7 +858,7 @@ mod tests {
         let mut bytes = REGTEST_MAGIC.to_vec();
         bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // size ~4 GiB, above the max
         bytes.extend_from_slice(&[0u8; 80]); // a well-formed 80 byte header
-        let path = std::env::temp_dir().join("bip300_oversized_blk00000.dat");
+        let path = std::env::temp_dir().join("cusf_oversized_blk00000.dat");
         std::fs::File::create(&path)
             .unwrap()
             .write_all(&bytes)

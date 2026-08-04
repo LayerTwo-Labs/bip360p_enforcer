@@ -21,7 +21,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     errors::ErrorChain,
-    messages::parse_m8_tx,
     proto::mainchain::HeaderSyncProgress,
     types::Event,
     validator::{
@@ -184,7 +183,6 @@ enum ConnectBlockRwTxnAction<'a> {
 /// The rwtxn is returned and can be committed or aborted.
 /// If connecting the block results in a header write, the header write is
 /// always committed. The block connect is not committed.
-#[expect(clippy::result_large_err)]
 fn connect_block_no_commit<'validator>(
     validator: &'validator Validator,
     block: &Block,
@@ -229,34 +227,17 @@ fn connect_block_no_commit<'validator>(
     let handler = BlockHandler::new(
         &validator.dbs,
         validator.network,
-        validator.network_params(),
-        #[cfg(feature = "bip360")]
-        validator.bip360_activation_height(),
-        #[cfg(feature = "bip360")]
-        validator.pqc_verify_budget_ms(),
-        validator.remote_rules_arc(),
+        validator.activation_height(),
     );
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
         .into_nested()?
     {
-        Ok(event) => {
-            let remove_mempool_txs = parent_child_rwtxn
-                .with_child(|child_rotxn| {
-                    validator
-                        .dbs
-                        .block_hashes
-                        .get_seen_bmm_requests_for_parent_block(child_rotxn, parent)
-                })?
-                .into_values()
-                .flat_map(|bmm_requests| bmm_requests.into_values().flatten())
-                .collect();
-            Ok(ConnectBlockRwTxnAction::Accept {
-                event,
-                remove_mempool_txs,
-                rwtxns: parent_child_rwtxn,
-            })
-        }
+        Ok(event) => Ok(ConnectBlockRwTxnAction::Accept {
+            event,
+            remove_mempool_txs: HashSet::new(),
+            rwtxns: parent_child_rwtxn,
+        }),
         Err(jfyi) => {
             let header_rwtxn = parent_child_rwtxn.abort_child();
             Ok(ConnectBlockRwTxnAction::Reject {
@@ -300,7 +281,7 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
                 let rwtxn = rwtxns.commit_child()?;
                 rwtxn.commit()?;
                 // Events should only ever be sent after committing DB txs, see
-                // https://github.com/LayerTwo-Labs/bip300301_enforcer/pull/185
+                // https://github.com/LayerTwo-Labs/cusf_enforcer/pull/185
                 let _send_err: Result<Option<_>, TrySendError<_>> =
                     validator.events_tx.try_broadcast(event);
                 Ok(ConnectBlockAction::Accept { remove_mempool_txs })
@@ -344,16 +325,7 @@ impl CusfEnforcer for Validator {
         };
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
-        let handler = BlockHandler::new(
-            &self.dbs,
-            self.network,
-            self.network_params(),
-            #[cfg(feature = "bip360")]
-            self.bip360_activation_height(),
-            #[cfg(feature = "bip360")]
-            self.pqc_verify_budget_ms(),
-            self.remote_rules_arc(),
-        );
+        let handler = BlockHandler::new(&self.dbs, self.network, self.activation_height());
         let sync_future = handler
             .sync_to_tip(
                 &self.mainchain_client,
@@ -397,16 +369,7 @@ impl CusfEnforcer for Validator {
         block_hash: BlockHash,
     ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
-        let handler = BlockHandler::new(
-            &self.dbs,
-            self.network,
-            self.network_params(),
-            #[cfg(feature = "bip360")]
-            self.bip360_activation_height(),
-            #[cfg(feature = "bip360")]
-            self.pqc_verify_budget_ms(),
-            self.remote_rules_arc(),
-        );
+        let handler = BlockHandler::new(&self.dbs, self.network, self.activation_height());
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
         Ok(DisconnectBlockAction::default())
@@ -417,8 +380,7 @@ impl CusfEnforcer for Validator {
     fn accept_tx<TxRef>(
         &mut self,
         tx: &Transaction,
-        #[cfg(feature = "bip360")] tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
-        #[cfg(not(feature = "bip360"))] _tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
+        tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
     ) -> Result<TxAcceptAction, Self::AcceptTxError>
     where
         TxRef: Borrow<Transaction>,
@@ -427,67 +389,11 @@ impl CusfEnforcer for Validator {
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
-        let handler = BlockHandler::new(
-            &self.dbs,
-            self.network,
-            self.network_params(),
-            #[cfg(feature = "bip360")]
-            self.bip360_activation_height(),
-            #[cfg(feature = "bip360")]
-            self.pqc_verify_budget_ms(),
-            self.remote_rules_arc(),
-        );
-        let res = if {
-            #[cfg(feature = "bip360")]
-            {
-                handler.validate_tx(&mut rwtxn, tx, tx_inputs)?
-            }
-            #[cfg(not(feature = "bip360"))]
-            {
-                handler.validate_tx(&mut rwtxn, tx)?
-            }
-        } {
-            let (conflicts_with, weight_tweak) = if let Some(bmm_request) = parse_m8_tx(tx) {
-                let txid = tx.compute_txid();
-                let conflicts_with = {
-                    let mut seen_bmm_request_txs = self
-                        .dbs
-                        .block_hashes
-                        .get_seen_bmm_requests(
-                            &rwtxn,
-                            bmm_request.prev_mainchain_block_hash,
-                            bmm_request.sidechain_number,
-                        )?
-                        .into_values()
-                        .flatten()
-                        .collect::<HashSet<_>>();
-                    seen_bmm_request_txs.remove(&txid);
-                    seen_bmm_request_txs
-                };
-                let () = self
-                    .dbs
-                    .block_hashes
-                    .put_seen_bmm_request(
-                        &mut rwtxn,
-                        bmm_request.prev_mainchain_block_hash,
-                        bmm_request.sidechain_number,
-                        txid,
-                        bmm_request.sidechain_block_hash,
-                    )
-                    .map_err(db::Error::from)?;
-                rwtxn.commit()?;
-                // Size in bytes of a BMM accept output
-                const BMM_ACCEPT_OUTPUT_SIZE: i64 = {
-                    let spk_size: i64 = 39;
-                    spk_size + 1 + 8
-                };
-                (conflicts_with, BMM_ACCEPT_OUTPUT_SIZE)
-            } else {
-                (HashSet::new(), 0)
-            };
+        let handler = BlockHandler::new(&self.dbs, self.network, self.activation_height());
+        let res = if handler.validate_tx(&mut rwtxn, tx, tx_inputs)? {
             TxAcceptAction::Accept {
-                conflicts_with,
-                weight_tweak,
+                conflicts_with: HashSet::new(),
+                weight_tweak: 0,
             }
         } else {
             TxAcceptAction::Reject

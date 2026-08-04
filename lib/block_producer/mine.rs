@@ -27,10 +27,7 @@ use bitcoin::{
 };
 use bitcoin_jsonrpsee::{
     MainClient as _,
-    client::{
-        BlockTemplateRequest, BoolWitness, GetRawMempoolClient as _, GetRawTransactionClient as _,
-        GetRawTransactionVerbose,
-    },
+    client::{BlockTemplate, BlockTemplateRequest},
 };
 
 use crate::{
@@ -66,45 +63,51 @@ fn get_block_value(height: u32, fees: Amount, network: Network) -> Amount {
 const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
 impl BlockProducer {
-    async fn fetch_transaction(&self, txid: Txid) -> Result<Transaction, error::FetchTransaction> {
-        let block_hash = None;
-        let transaction_hex = self
-            .main_client()
-            .get_raw_transaction(txid, GetRawTransactionVerbose::<false>, block_hash)
+    async fn fetch_block_template(
+        &self,
+        rules: Vec<String>,
+    ) -> Result<BlockTemplate, error::GetBlockTemplate> {
+        self.gbt_client()
+            .get_block_template(BlockTemplateRequest {
+                rules,
+                capabilities: HashSet::from(["coinbasetxn".to_string()]),
+                long_poll_id: None,
+            })
             .await
-            .map_err(|err| error::BitcoinCoreRPC {
-                method: "getrawtransaction".to_string(),
-                error: err,
-            })?;
-        let transaction = bitcoin::consensus::encode::deserialize_hex(&transaction_hex)?;
-        Ok(transaction)
+            .map_err(|err| error::GetBlockTemplate {
+                source: err,
+                template_error: self.last_gbt_error(),
+            })
     }
 
     /// select non-coinbase txs for a new block
-    async fn select_block_txs(&self) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
+    async fn select_block_txs(
+        &self,
+        mainchain_tip: BlockHash,
+    ) -> Result<Vec<Transaction>, error::SelectBlockTxs> {
+        let template = self
+            .fetch_block_template(vec!["segwit".to_string()])
+            .await?;
+
+        // The template is built on its server's tip. We build on the
+        // validator's. If those disagree one of them is still catching up, and
+        // mixing the template's tx set onto a different parent yields a block
+        // Core rejects as `inconclusive`. Say so plainly instead.
+        if template.prev_blockhash != mainchain_tip {
+            return Err(error::SelectBlockTxs::TemplateTipMismatch {
+                template_tip: template.prev_blockhash,
+                validator_tip: mainchain_tip,
+            });
+        }
+
         let mut res = Vec::new();
 
-        // We want to include all transactions from the mempool into our newly generated block.
-        // This approach is perhaps a bit naive, and could fail if there are conflicting TXs
-        // pending. On signet the block is constructed using `getblocktemplate`, so this will not
-        // be an issue there.
-        //
-        // Including all the mempool transactions here ensure that pending sidechain deposit
-        // transactions get included into a block.
-        let raw_mempool = self
-            .main_client()
-            .get_raw_mempool(BoolWitness::<false>, BoolWitness::<false>)
-            .await
-            .map_err(|err| error::BitcoinCoreRPC {
-                method: "getrawmempool".to_string(),
-                error: err,
-            })?;
-
-        for txid in raw_mempool {
-            let transaction = self
-                .fetch_transaction(txid)
-                .await
-                .map_err(|err| error::SelectBlockTxs::FetchTransaction { txid, source: err })?;
+        for template_tx in template.transactions {
+            let txid = template_tx.txid;
+            let transaction: Transaction =
+                bitcoin::consensus::deserialize(&template_tx.data).map_err(|err| {
+                    error::SelectBlockTxs::DecodeTemplateTransaction { txid, source: err }
+                })?;
             res.push(transaction);
         }
 
@@ -237,8 +240,43 @@ impl BlockProducer {
         }
         let block_hash = block.header.block_hash();
         tracing::info!(%block_hash, %transaction_count, "Submitted block");
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let () = self.await_block_connection(block_hash).await?;
         Ok(block_hash)
+    }
+
+    /// Wait until the validator has processed `block_hash`. A successful
+    /// `submitblock` only means Bitcoin Core accepted the block. The
+    /// enforcer syncs it asynchronously, so returning before the validator
+    /// has caught up would let the next block template build on a stale
+    /// tip, which again would lead to Bitcoin Core rejecting blocks as duplicate.
+    async fn await_block_connection(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<(), error::AwaitBlockConnection> {
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        const POLL_INTERVAL: Duration = Duration::from_millis(25);
+        let poll = async {
+            loop {
+                // Block info is written in the same DB transaction that
+                // advances the validator tip, so once it is present the
+                // validator's view includes `block_hash`, even if the tip
+                // has since moved past it.
+                if self
+                    .validator()
+                    .try_get_block_infos(&block_hash, 0)?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        };
+        tokio::time::timeout(TIMEOUT, poll)
+            .await
+            .map_err(|_elapsed| error::AwaitBlockConnection::Timeout {
+                block_hash,
+                timeout: TIMEOUT,
+            })?
     }
 
     fn check_has_binary(&self, binary: &Path) -> Result<(), error::MissingBinary> {
@@ -283,7 +321,7 @@ impl BlockProducer {
 
         // Signet blocks come out of the signet miner, which pulls its template
         // from our own `getblocktemplate` server (see
-        // `generate_signet_block`). That is also the only place the drivechain
+        // `generate_signet_block`).
         // coinbase messages get added on signet, so there is no serving this
         // request without the template server running. Checked before the block
         // count, as it is the more fundamental misconfiguration of the two.
@@ -296,17 +334,8 @@ impl BlockProducer {
         }
 
         let template = self
-            .main_client()
-            .get_block_template(BlockTemplateRequest {
-                rules: vec!["signet".to_string(), "segwit".to_string()],
-                capabilities: HashSet::new(),
-                long_poll_id: None,
-            })
-            .await
-            .map_err(|err| error::BitcoinCoreRPC {
-                method: "getblocktemplate".to_string(),
-                error: err,
-            })?;
+            .fetch_block_template(vec!["signet".to_string(), "segwit".to_string()])
+            .await?;
 
         let Some(signet_challenge) = template.signet_challenge else {
             return Err(error::VerifyCanMine::NoSignetChallengeFound);
@@ -541,6 +570,8 @@ impl BlockProducer {
 
         tracing::info!("Generated signet block: {}", block_hash);
 
+        let () = self.await_block_connection(block_hash).await?;
+
         Ok(block_hash)
     }
 
@@ -558,11 +589,11 @@ impl BlockProducer {
                 .map_err(error::GenerateBlock::GenerateSignetBlock);
         }
         let coinbase_spk = coinbase_addr.script_pubkey();
-        if self.validator().try_get_mainchain_tip()?.is_none() {
+        let Some(mainchain_tip) = self.validator().try_get_mainchain_tip()? else {
             return Err(error::GenerateBlock::ValidatorNotSynced);
         };
         let coinbase_outputs = Vec::new();
-        let transactions = self.select_block_txs().await?;
+        let transactions = self.select_block_txs(mainchain_tip).await?;
 
         tracing::info!(
             coinbase_outputs = %coinbase_outputs.len(),

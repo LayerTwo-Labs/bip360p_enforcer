@@ -1,8 +1,8 @@
-use bip300301_enforcer_integration_tests::{
+use clap::Parser;
+use cusf_enforcer_integration_tests::{
     integration_test,
     util::{BinPaths, TestFailureCollector, TestFileRegistry, display_timing_summary},
 };
-use clap::Parser;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
@@ -58,7 +58,7 @@ fn set_tracing_subscriber(log_level: LevelFilter) -> anyhow::Result<()> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(level)),
-            ("bip300301_enforcer_integration_tests", level),
+            ("cusf_enforcer_integration_tests", level),
         ]);
         let directives_str = match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
             Ok(env_directives) => format!("{default_directives_str},{env_directives}"),
@@ -127,7 +127,7 @@ async fn run() -> anyhow::Result<std::process::ExitCode> {
     let () = set_tracing_subscriber(args.log_level)?;
     let rt_handle = tokio::runtime::Handle::current();
     // Read env vars
-    if let Some(env_filepath) = std::env::var_os("BIP300301_ENFORCER_INTEGRATION_TEST_ENV") {
+    if let Some(env_filepath) = std::env::var_os("CUSF_ENFORCER_INTEGRATION_TEST_ENV") {
         let env_filepath: &std::path::Path = env_filepath.as_ref();
         tracing::debug!("Adding env vars from `{}`", env_filepath.display());
         dotenvy::from_filename_override(env_filepath).map_err(|err| {

@@ -33,7 +33,6 @@ use crate::{
     cli::{Config, WalletConfig, WalletSyncSource},
     convert,
     errors::ErrorChain,
-    messages,
     types::BDKWalletTransaction,
     validator::Validator,
     wallet::{
@@ -66,8 +65,8 @@ enum ChainSourceClient {
 
 const fn default_esplora_url(network: Network) -> Option<&'static str> {
     match network {
-        Network::Signet => Some("https://explorer.signet.drivechain.info/api"),
-        Network::Bitcoin => Some("https://explorer.forknet.drivechain.info/api"),
+        // No public default beyond regtest: operators supply their own
+        // Esplora endpoint via `--wallet-esplora-url`.
         Network::Regtest => Some("http://localhost:3003"),
         _ => None,
     }
@@ -75,8 +74,8 @@ const fn default_esplora_url(network: Network) -> Option<&'static str> {
 
 const fn default_electrum_host_port(network: Network) -> Option<(&'static str, u16)> {
     match network {
-        Network::Signet => Some(("node.signet.drivechain.info", 50001)),
-        Network::Bitcoin => Some(("node.forknet.drivechain.info", 50001)),
+        // No public default beyond regtest: operators supply their own
+        // Electrum endpoint via `--wallet-electrum-host`/`--wallet-electrum-port`.
         Network::Regtest =>
         // Default for mempool/electrs
         {
@@ -641,7 +640,10 @@ impl Wallet {
     where
         PushBytesBuf: TryFrom<Msg>,
     {
-        let op_return_txout = messages::create_op_return_output(msg)?;
+        let op_return_txout = bitcoin::TxOut {
+            script_pubkey: bitcoin::ScriptBuf::new_op_return(PushBytesBuf::try_from(msg)?),
+            value: bitcoin::Amount::ZERO,
+        };
         Ok(bdk_wallet::bitcoin::TxOut {
             script_pubkey: bdk_wallet::bitcoin::ScriptBuf::from_bytes(
                 op_return_txout.script_pubkey.to_bytes(),
@@ -947,7 +949,7 @@ impl Wallet {
             .map_err(error::SendWalletTransaction::BroadcastTx)?
             .is_none()
         {
-            let err = error::SendWalletTransaction::OpDrivechainNotSupported;
+            let err = error::SendWalletTransaction::NonstandardTxNotSupported;
             tracing::error!(%txid, "{:#}", ErrorChain::new(&err));
             return Err(err);
         }
@@ -1098,7 +1100,7 @@ impl Wallet {
                     let block_hash = self
                         .inner
                         .main_client
-                        .getblockhash(try_include_height as usize)
+                        .getblockhash(*block_height as usize)
                         .await
                         .map_err(|err| {
                             error::ConnectMissingBlockInner::GetBlockHash(error::BitcoinCoreRPC {
@@ -1150,12 +1152,16 @@ impl Wallet {
                     err @ bdk_wallet::chain::local_chain::CannotConnectError { try_include_height },
                 ) => {
                     if try_include_height < *block_height {
-                        tracing::debug!(
-                            "adding missing block at height {} to stack",
-                            try_include_height
-                        );
+                        // BDK's `try_include_height` can skip past the block's
+                        // immediate parent, and retrying at the skipped-to height
+                        // connects as a no-op without fixing anything, looping
+                        // forever. Step down one height at a time instead. The
+                        // reported height is only used (above) to check that we're
+                        // still making downward progress.
+                        let next_height = *block_height - 1;
+                        tracing::debug!("adding missing block at height {} to stack", next_height);
                         try_includes.push(TryInclude {
-                            block_height: try_include_height,
+                            block_height: next_height,
                             block: None,
                         });
                     } else {

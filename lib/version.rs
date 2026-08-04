@@ -46,9 +46,9 @@ struct NetworkInfoVersion {
 #[derive(Debug, Diagnostic, Error)]
 #[error("unsupported Bitcoin Core version: `{subversion}` (version {version})")]
 #[diagnostic(
-    code(bip300301_enforcer::unsupported_bitcoin_core_version),
+    code(cusf_enforcer::unsupported_bitcoin_core_version),
     url(
-        "https://github.com/LayerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#supported-bitcoin-core-versions"
+        "https://github.com/LayerTwo-Labs/cusf_enforcer?tab=readme-ov-file#supported-bitcoin-core-versions"
     )
 )]
 pub struct UnsupportedBitcoinCoreVersion {
@@ -61,7 +61,7 @@ pub struct UnsupportedBitcoinCoreVersion {
 #[derive(Debug, Diagnostic, Error)]
 pub enum VersionCheckError {
     #[error("failed to call `getnetworkinfo` on Bitcoin Core")]
-    #[diagnostic(code(bip300301_enforcer::getnetworkinfo_failed))]
+    #[diagnostic(code(cusf_enforcer::getnetworkinfo_failed))]
     Rpc(#[source] jsonrpsee::core::client::Error),
     #[error(transparent)]
     #[diagnostic(transparent)]

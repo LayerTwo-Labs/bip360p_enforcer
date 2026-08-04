@@ -1,6 +1,6 @@
 //! Logging setup, functions, and utilities
 
-use bip300301_enforcer_lib::cli::LogFormatter;
+use cusf_enforcer_lib::cli::LogFormatter;
 use miette::IntoDiagnostic as _;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt as _};
 
@@ -45,8 +45,8 @@ pub fn set_tracing_subscriber(
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),
-            ("bip300301", log_level),
-            ("bip300301_enforcer", log_level),
+            ("cusf_enforcer", log_level),
+            ("cusf_enforcer_lib", log_level),
             ("cusf_enforcer_mempool", log_level),
             (
                 "h2",

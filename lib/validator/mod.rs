@@ -1,15 +1,14 @@
 use std::{
-    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use async_broadcast::{InactiveReceiver, Sender as BroadcastSender, broadcast};
-use bitcoin::{self, Amount, BlockHash, OutPoint, Txid};
+use bitcoin::{self, BlockHash};
 use bitcoin_jsonrpsee::jsonrpsee;
-use fallible_iterator::{FallibleIterator, IteratorExt};
+use fallible_iterator::FallibleIterator;
 use futures::{StreamExt, stream::FusedStream};
-use miette::{Diagnostic, IntoDiagnostic};
+use miette::Diagnostic;
 use nonempty::NonEmpty;
 use sneed::{db, env};
 use thiserror::Error;
@@ -17,10 +16,7 @@ use tokio::sync::watch::Receiver as WatchReceiver;
 
 use crate::{
     proto::{StatusBuilder, ToStatus, mainchain::HeaderSyncProgress},
-    types::{
-        BlockInfo, BmmCommitment, BmmCommitments, Ctip, Event, HeaderInfo, NetworkParams,
-        Sidechain, SidechainNumber, SidechainProposalId, TreasuryUtxo, TwoWayPegData,
-    },
+    types::{BlockInfo, Event, HeaderInfo, NetworkParams},
     validator::main_rest_client::MainRestClient,
 };
 
@@ -28,19 +24,13 @@ pub mod cusf_enforcer;
 mod dbs;
 pub mod main_rest_client;
 pub mod parse_block_files;
-#[cfg(feature = "bip360")]
-pub mod pqc;
-/// Soft-fork rule registry / consent composition (hub model). See `rules` + docs/MULTI_ENFORCER.md.
-pub mod rules;
 mod sync_state_summary;
 mod task;
 #[cfg(test)]
 mod test_utils;
 
-use self::dbs::{Dbs, PendingM6ids};
-pub use self::sync_state_summary::{
-    CtipSummary, PendingWithdrawalSummary, SidechainStateSummary, SyncStateSummary,
-};
+use self::dbs::Dbs;
+pub use self::sync_state_summary::SyncStateSummary;
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -51,91 +41,6 @@ pub enum InitError {
         method: String,
         source: jsonrpsee::core::ClientError,
     },
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipSequenceNumberError {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    TryGet(#[from] db::error::TryGet),
-}
-
-impl ToStatus for GetCtipSequenceNumberError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-            Self::TryGet(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipError {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    TryGet(#[from] db::error::TryGet),
-}
-
-impl ToStatus for TryGetCtipError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-            Self::TryGet(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetCtipsError {
-    #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetCtipsError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbIter(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum TryGetCtipValueSeqError {
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for TryGetCtipValueSeqError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbTryGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetTreasuryUtxoError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetTreasuryUtxoError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
 }
 
 #[derive(Debug, Diagnostic, Error)]
@@ -264,28 +169,6 @@ where
 }
 
 #[derive(Debug, Error)]
-enum GetTwoWayPegDataRangeErrorInner {
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-    #[error(transparent)]
-    GetTwoWayPegDataRange(#[from] dbs::block_hash_dbs_error::GetTwoWayPegDataRange),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-#[repr(transparent)]
-pub struct GetTwoWayPegDataRangeError(GetTwoWayPegDataRangeErrorInner);
-
-impl<T> From<T> for GetTwoWayPegDataRangeError
-where
-    GetTwoWayPegDataRangeErrorInner: From<T>,
-{
-    fn from(err: T) -> Self {
-        Self(err.into())
-    }
-}
-
-#[derive(Debug, Error)]
 pub enum ListHeadersError {
     #[error(transparent)]
     Iter(#[from] db::error::Iter),
@@ -347,39 +230,6 @@ impl ToStatus for TryGetMainchainTipHeightError {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum TryGetBmmCommitmentsError {
-    #[error(transparent)]
-    DbTryGet(#[from] db::error::TryGet),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetPendingWithdrawalsError {
-    #[error(transparent)]
-    DbGet(#[from] db::error::Get),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetPendingWithdrawalsError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbGet(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetSeenBmmRequestsForParentBlockError {
-    #[error(transparent)]
-    DbRange(#[from] db::error::Range),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
 #[derive(Debug, Diagnostic, Error)]
 pub enum EventsStreamError {
     #[error("Events stream closed due to overflow")]
@@ -390,23 +240,6 @@ impl ToStatus for EventsStreamError {
     fn builder(&self) -> StatusBuilder<'_> {
         match self {
             Self::Overflow => StatusBuilder::new(self),
-        }
-    }
-}
-
-#[derive(Debug, Diagnostic, Error)]
-pub enum GetSidechainsError {
-    #[error(transparent)]
-    DbIter(#[from] db::error::Iter),
-    #[error(transparent)]
-    ReadTxn(#[from] env::error::ReadTxn),
-}
-
-impl ToStatus for GetSidechainsError {
-    fn builder(&self) -> StatusBuilder<'_> {
-        match self {
-            Self::DbIter(err) => StatusBuilder::new(err),
-            Self::ReadTxn(err) => StatusBuilder::new(err),
         }
     }
 }
@@ -422,23 +255,10 @@ pub struct Validator {
     mainchain_blocks_dir: Option<PathBuf>,
     network: bitcoin::Network,
     network_params: NetworkParams,
-    #[cfg(feature = "bip360")]
-    bip360_activation_height: u32,
-    #[cfg(feature = "bip360")]
-    pqc_verify_budget_ms: u64,
-    /// Remote UDS rule workers from hub `--rules-worker` (empty = Local-only).
-    remote_rules: Arc<rules::BackendEngine>,
+    activation_height: u32,
 }
 
 impl Validator {
-    // bip360 adds activation height + PQC budget args beyond the drivechain ctor.
-    #[cfg_attr(
-        feature = "bip360",
-        expect(
-            clippy::too_many_arguments,
-            reason = "bip360 adds activation + budget args"
-        )
-    )]
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
         mainchain_rest_client: MainRestClient,
@@ -446,8 +266,7 @@ impl Validator {
         data_dir: &Path,
         network: bitcoin::Network,
         network_params: NetworkParams,
-        #[cfg(feature = "bip360")] bip360_activation_height: u32,
-        #[cfg(feature = "bip360")] pqc_verify_budget_ms: u64,
+        activation_height: u32,
     ) -> Result<Self, InitError> {
         // Note: this needs to be reasonably big. If set too small,
         // we're going to run into strange issues with the broadcast
@@ -472,37 +291,12 @@ impl Validator {
             mainchain_blocks_dir,
             network,
             network_params,
-            #[cfg(feature = "bip360")]
-            bip360_activation_height,
-            #[cfg(feature = "bip360")]
-            pqc_verify_budget_ms,
-            remote_rules: Arc::new(rules::BackendEngine::new()),
+            activation_height,
         })
     }
 
-    /// Install remote rule backends (hub `--rules-worker`). Replaces any prior set.
-    /// Ballots from remotes are required on mempool/connect when registered
-    /// (fail-closed Timeout/Failure/Reject).
-    pub fn set_remote_rules(&mut self, engine: rules::BackendEngine) {
-        self.remote_rules = Arc::new(engine);
-    }
-
-    pub fn remote_rules(&self) -> &rules::BackendEngine {
-        &self.remote_rules
-    }
-
-    pub(crate) fn remote_rules_arc(&self) -> Arc<rules::BackendEngine> {
-        Arc::clone(&self.remote_rules)
-    }
-
-    #[cfg(feature = "bip360")]
-    pub fn bip360_activation_height(&self) -> u32 {
-        self.bip360_activation_height
-    }
-
-    #[cfg(feature = "bip360")]
-    pub fn pqc_verify_budget_ms(&self) -> u64 {
-        self.pqc_verify_budget_ms
+    pub fn activation_height(&self) -> u32 {
+        self.activation_height
     }
 
     pub fn network(&self) -> bitcoin::Network {
@@ -529,126 +323,6 @@ impl Validator {
     /// Returns `None` if there is not a header sync in progress
     pub fn subscribe_header_sync_progress(&self) -> Option<WatchReceiver<HeaderSyncProgress>> {
         self.header_sync_progress_rx.read().clone()
-    }
-
-    /// Get (possibly unactivated) sidechains
-    pub fn get_sidechains(
-        &self,
-    ) -> Result<Vec<(SidechainProposalId, Sidechain)>, GetSidechainsError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .proposal_id_to_sidechain
-            .iter(&rotxn)
-            .map_err(db::error::Iter::from)?
-            .collect()
-            .map_err(db::error::Iter::from)?;
-        Ok(res)
-    }
-
-    pub fn get_active_sidechains(&self) -> Result<Vec<Sidechain>, GetSidechainsError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .active_sidechains
-            .sidechain()
-            .iter(&rotxn)
-            .map_err(db::error::Iter::from)?
-            .map(|(_sidechain_number, sidechain)| {
-                assert!(sidechain.status.activation_height.is_some());
-                Ok(sidechain)
-            })
-            .collect()
-            .map_err(db::error::Iter::from)?;
-        Ok(res)
-    }
-
-    pub fn get_ctip_sequence_number(
-        &self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<Option<u64>, GetCtipSequenceNumberError> {
-        let rotxn = self.dbs.read_txn()?;
-        let treasury_utxo_count = self
-            .dbs
-            .active_sidechains
-            .treasury_utxo_count
-            .try_get(&rotxn, &sidechain_number)?;
-        // Sequence numbers begin at 0, so the total number of treasury utxos in the database
-        // gives us the *next* sequence number.
-        // In order to get the current sequence number we decrement it by one.
-        let sequence_number =
-            treasury_utxo_count.map(|treasury_utxo_count| treasury_utxo_count.get() - 1);
-        Ok(sequence_number)
-    }
-
-    /// Returns `Some` with the Ctip for the given sidechain number. `None`
-    /// if there's no Ctip for the given sidechain number.
-    pub fn try_get_ctip(
-        &self,
-        sidechain_number: SidechainNumber,
-    ) -> Result<Option<Ctip>, TryGetCtipError> {
-        let rotxn = self.dbs.read_txn()?;
-        let ctip = self
-            .dbs
-            .active_sidechains
-            .ctip()
-            .try_get(&rotxn, &sidechain_number)?;
-        Ok(ctip)
-    }
-
-    /// Returns the Ctip for the specified sidechain, or an error
-    /// if there is no Ctip.
-    pub fn get_ctip(&self, sidechain_number: SidechainNumber) -> Result<Ctip, miette::Report> {
-        let rotxn = self.dbs.read_txn().into_diagnostic()?;
-        self.dbs
-            .active_sidechains
-            .ctip()
-            .get(&rotxn, &sidechain_number)
-            .into_diagnostic()
-    }
-
-    /// Returns Ctips for each active sidechain with a ctip
-    pub fn get_ctips(&self) -> Result<HashMap<SidechainNumber, Ctip>, GetCtipsError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .active_sidechains
-            .ctip()
-            .iter(&rotxn)
-            .map_err(db::error::Iter::from)?
-            .map_err(db::error::Iter::from)
-            .collect()?;
-        Ok(res)
-    }
-
-    /// Returns the sidechain number, value, and sequence for a Ctip outpoint,
-    /// if it exists
-    pub fn try_get_ctip_value_seq(
-        &self,
-        outpoint: &OutPoint,
-    ) -> Result<Option<(SidechainNumber, Amount, u64)>, TryGetCtipValueSeqError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .active_sidechains
-            .ctip_outpoint_to_value_seq()
-            .try_get(&rotxn, outpoint)?;
-        Ok(res)
-    }
-
-    /// Get treasury UTXO by sequence number
-    pub fn get_treasury_utxo(
-        &self,
-        sidechain_number: SidechainNumber,
-        sequence: u64,
-    ) -> Result<TreasuryUtxo, GetTreasuryUtxoError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .active_sidechains
-            .slot_sequence_to_treasury_utxo()
-            .get(&rotxn, &(sidechain_number, sequence))?;
-        Ok(res)
     }
 
     pub fn get_header_info(
@@ -786,140 +460,5 @@ impl Validator {
         };
         let height = self.dbs.block_hashes.height().get(&rotxn, &tip)?;
         Ok(Some(height))
-    }
-
-    pub fn get_two_way_peg_data(
-        &self,
-        start_block: Option<BlockHash>,
-        end_block: BlockHash,
-    ) -> Result<Vec<TwoWayPegData>, GetTwoWayPegDataRangeError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res =
-            self.dbs
-                .block_hashes
-                .get_two_way_peg_data_range(&rotxn, start_block, end_block)?;
-        Ok(res)
-    }
-
-    /// Get BMM commitments for the specified block hash, and up to
-    /// max_ancestors ancestors.
-    /// The returned vector will be empty if BMM commitments for the specified
-    /// block hash were not found.
-    /// Returns BMM commitments newest-first.
-    pub fn try_get_bmm_commitments(
-        &self,
-        block_hash: &BlockHash,
-        max_ancestors: usize,
-    ) -> Result<Vec<BmmCommitments>, TryGetBmmCommitmentsError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .block_hashes
-            .ancestor_headers(&rotxn, *block_hash)
-            .take(max_ancestors + 1)
-            .map(|(block_hash, _)| {
-                self.dbs
-                    .block_hashes
-                    .bmm_commitments()
-                    .try_get(&rotxn, &block_hash)
-            })
-            .take_while(|bmm_commitments| Ok(bmm_commitments.is_some()))
-            .flat_map(|bmm_commitments| {
-                Ok(bmm_commitments
-                    .into_iter()
-                    .map(Ok)
-                    .transpose_into_fallible())
-            })
-            .collect()?;
-        Ok(res)
-    }
-
-    pub fn get_pending_withdrawals(
-        &self,
-        sidechain_number: &SidechainNumber,
-    ) -> Result<PendingM6ids, GetPendingWithdrawalsError> {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .active_sidechains
-            .pending_m6ids()
-            .get(&rotxn, sidechain_number)?;
-        Ok(res)
-    }
-
-    pub fn get_seen_bmm_requests_for_parent_block(
-        &self,
-        parent_block_hash: BlockHash,
-    ) -> Result<
-        HashMap<SidechainNumber, HashMap<BmmCommitment, HashSet<Txid>>>,
-        GetSeenBmmRequestsForParentBlockError,
-    > {
-        let rotxn = self.dbs.read_txn()?;
-        let res = self
-            .dbs
-            .block_hashes
-            .get_seen_bmm_requests_for_parent_block(&rotxn, parent_block_hash)?;
-        Ok(res)
-    }
-}
-
-#[cfg(test)]
-mod ctip_sequence_number_tests {
-    use bitcoin::{Amount, OutPoint, Txid, hashes::Hash as _};
-
-    use super::*;
-    use crate::types::Ctip;
-
-    fn dummy_validator(dir: &std::path::Path) -> Validator {
-        let mainchain_client = jsonrpsee::http_client::HttpClientBuilder::default()
-            .build("http://127.0.0.1:1")
-            .expect("build dummy rpc client");
-        let mainchain_rest_client =
-            MainRestClient::new(url::Url::parse("http://127.0.0.1:1").expect("valid url"));
-        Validator::new(
-            mainchain_client,
-            mainchain_rest_client,
-            None,
-            dir,
-            bitcoin::Network::Regtest,
-            NetworkParams::for_network(bitcoin::Network::Regtest),
-            #[cfg(feature = "bip360")]
-            0,
-            #[cfg(feature = "bip360")]
-            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
-        )
-        .expect("construct validator")
-    }
-
-    #[tokio::test]
-    async fn get_ctip_sequence_number_after_disconnecting_last_ctip_is_none() {
-        let dir = temp_dir::TempDir::new().unwrap();
-        let validator = dummy_validator(dir.path());
-        let sc = SidechainNumber(1);
-
-        let mut rwtxn = validator.dbs.write_txn().unwrap();
-        validator
-            .dbs
-            .active_sidechains
-            .put_ctip(
-                &mut rwtxn,
-                sc,
-                &Ctip {
-                    outpoint: OutPoint {
-                        txid: Txid::from_byte_array([0x33; 32]),
-                        vout: 0,
-                    },
-                    value: Amount::from_sat(1_000),
-                },
-            )
-            .unwrap();
-        validator
-            .dbs
-            .active_sidechains
-            .delete_ctip(&mut rwtxn, sc)
-            .unwrap();
-        rwtxn.commit().unwrap();
-
-        assert_eq!(validator.get_ctip_sequence_number(sc).unwrap(), None);
     }
 }

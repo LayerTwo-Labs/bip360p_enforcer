@@ -728,6 +728,8 @@ where
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum InitialSync {
+    #[error(transparent)]
+    GetMainchainTip(#[from] validator::GetMainchainTipError),
     #[error("received shutdown signal")]
     Shutdown,
     #[error(transparent)]
@@ -822,9 +824,9 @@ pub enum SendWalletTransaction {
     #[error(transparent)]
     SignTransaction(#[from] WalletSignTransaction),
     #[error(
-        "failed to broadcast OP_DRIVECHAIN transaction (make sure your node has 'acceptnonstdtxn=1' in its configuration)"
+        "failed to broadcast nonstandard transaction (make sure your node has 'acceptnonstdtxn=1' in its configuration)"
     )]
-    OpDrivechainNotSupported,
+    NonstandardTxNotSupported,
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
     #[error(transparent)]
@@ -836,7 +838,7 @@ impl ToStatus for SendWalletTransaction {
         match self {
             Self::CreateSendPsbt(err) => err.builder(),
             Self::SignTransaction(err) => err.builder(),
-            Self::BroadcastTx(_) | Self::OpDrivechainNotSupported => StatusBuilder::new(self),
+            Self::BroadcastTx(_) | Self::NonstandardTxNotSupported => StatusBuilder::new(self),
             Self::NotUnlocked(err) => err.builder(),
             Self::Persistence(err) => StatusBuilder::new(err),
         }

@@ -26,8 +26,7 @@ enum Network {
 }
 
 // Per-block information tracked by the enforcer beyond the raw header.
-// Drivechain fields (BMM commitment, deposit/withdrawal events) were removed;
-// their field numbers are reserved.
+// Field numbers 1-2 were used by a previous rule set and are reserved.
 message BlockInfo {
   reserved 1, 2;
 }
@@ -81,7 +80,7 @@ message GetBlockInfoRequest {
   // The block to fetch information about.
   cusf.common.v1.ReverseHex block_hash = 1;
 
-  // Previously the sidechain to filter events for (drivechain; removed).
+  // Reserved: used by a previous rule set.
   reserved 2;
 
   // Request block info for up to `max_ancestors` ancestors.
@@ -103,7 +102,7 @@ message GetBlockInfoResponse {
 
 message GetChainInfoRequest {}
 message GetChainInfoResponse {
-  // Previously BIP300 consensus constants (drivechain; removed).
+  // Reserved: used by a previous rule set.
   reserved 2;
 
   Network network = 1;
@@ -119,7 +118,7 @@ message GetChainTipResponse {
 }
 
 message SubscribeEventsRequest {
-  // Previously the sidechain to filter events for (drivechain; removed).
+  // Reserved: used by a previous rule set.
   reserved 1;
 }
 message SubscribeEventsResponse {

@@ -1,304 +1,24 @@
-use std::{
-    num::NonZeroU64,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use bitcoin::{Amount, OutPoint};
-use fallible_iterator::FallibleIterator;
 use heed_types::SerdeBincode;
-use ordermap::OrderMap;
-use sneed::{DatabaseUnique, Env, RoDatabaseUnique, RoTxn, RwTxn, UnitKey, db, env, rwtxn};
+use sneed::{DatabaseUnique, Env, RoTxn, RwTxn, UnitKey, env, rwtxn};
 use thiserror::Error;
-
-use crate::types::{
-    Ctip, M6id, PendingM6idInfo, Sidechain, SidechainNumber, SidechainProposalId, TreasuryUtxo,
-};
 
 mod block_hashes;
 pub(in crate::validator) mod diff;
-#[cfg(feature = "bip360")]
-mod p2mr_utxos;
 
 pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 
-pub type PendingM6ids = OrderMap<M6id, PendingM6idInfo>;
+/// On-disk schema version of the validator databases.
+///
+/// Bump this whenever the set of tables (or their encodings) changes.
+/// Databases created by older versions are incompatible; since the enforcer
+/// state is fully chain-derivable, the fix is deleting the datadir and
+/// resyncing.
+const DB_VERSION: u32 = 2;
 
-/// These DBs should all contain exacty the same keys.
-#[derive(Clone)]
-pub(super) struct ActiveSidechainDbs {
-    ctip: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>>,
-    /// MUST contain ALL keys/values that `ctip` has ever contained.
-    /// Associates Ctip outpoints with their value and sequence number
-    ctip_outpoint_to_value_seq:
-        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>,
-    // ALL active sidechains MUST exist as keys
-    pending_m6ids: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>>,
-    // ALL active sidechains MUST exist as keys
-    sidechain: DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>>,
-    slot_sequence_to_treasury_utxo:
-        DatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>>,
-    pub treasury_utxo_count:
-        DatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<NonZeroU64>>,
-}
-
-impl ActiveSidechainDbs {
-    const NUM_DBS: u32 = 6;
-
-    fn new(env: &Env, rwtxn: &mut RwTxn) -> Result<Self, env::error::CreateDb> {
-        let ctip = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_ctip")?;
-        let ctip_outpoint_to_value_seq =
-            DatabaseUnique::create(env, rwtxn, "active_sidechain_ctip_outpoint_to_value_seq")?;
-        let pending_m6ids =
-            DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_pending_m6ids")?;
-        let sidechain = DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_sidechain")?;
-        let slot_sequence_to_treasury_utxo = DatabaseUnique::create(
-            env,
-            rwtxn,
-            "active_sidechain_slot_sequence_to_treasury_utxo",
-        )?;
-        let treasury_utxo_count =
-            DatabaseUnique::create(env, rwtxn, "active_sidechain_number_to_treasury_utxo_count")?;
-        Ok(Self {
-            ctip,
-            ctip_outpoint_to_value_seq,
-            pending_m6ids,
-            sidechain,
-            slot_sequence_to_treasury_utxo,
-            treasury_utxo_count,
-        })
-    }
-
-    pub fn ctip(&self) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Ctip>> {
-        &self.ctip
-    }
-
-    pub fn ctip_outpoint_to_value_seq(
-        &self,
-    ) -> &RoDatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<(SidechainNumber, Amount, u64)>>
-    {
-        &self.ctip_outpoint_to_value_seq
-    }
-
-    pub fn pending_m6ids(
-        &self,
-    ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<PendingM6ids>> {
-        &self.pending_m6ids
-    }
-
-    pub fn sidechain(
-        &self,
-    ) -> &RoDatabaseUnique<SerdeBincode<SidechainNumber>, SerdeBincode<Sidechain>> {
-        &self.sidechain
-    }
-
-    /// All active sidechain numbers, collected.  
-    pub fn numbers(&self, rotxn: &RoTxn) -> Result<Vec<SidechainNumber>, db::Error> {
-        let numbers = self
-            .sidechain
-            .lazy_decode()
-            .iter(rotxn)?
-            .map(|(n, _)| Ok(n))
-            .collect()?;
-        Ok(numbers)
-    }
-
-    pub fn slot_sequence_to_treasury_utxo(
-        &self,
-    ) -> &RoDatabaseUnique<SerdeBincode<(SidechainNumber, u64)>, SerdeBincode<TreasuryUtxo>> {
-        &self.slot_sequence_to_treasury_utxo
-    }
-
-    /// Put ctip, returning the sequence number
-    pub fn put_ctip(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: SidechainNumber,
-        ctip: &Ctip,
-    ) -> Result<u64, db::Error> {
-        let treasury_utxo_count: u64 =
-            match self.treasury_utxo_count.try_get(rwtxn, &sidechain_number)? {
-                Some(treasury_utxo_count) => treasury_utxo_count.get(),
-                None => 0,
-            };
-        // Sequence numbers begin at 0, so the total number of treasury utxos in the database
-        // gives us the *next* sequence number.
-        let sequence_number = treasury_utxo_count;
-        let old_treasury_value = self
-            .ctip()
-            .try_get(rwtxn, &sidechain_number)?
-            .map(|old_ctip| old_ctip.value)
-            .unwrap_or(Amount::ZERO);
-        let treasury_utxo = TreasuryUtxo {
-            sidechain_number,
-            outpoint: ctip.outpoint,
-            total_value: ctip.value,
-            previous_total_value: old_treasury_value,
-        };
-        self.slot_sequence_to_treasury_utxo.put(
-            rwtxn,
-            &(sidechain_number, sequence_number),
-            &treasury_utxo,
-        )?;
-        let new_treasury_utxo_count = NonZeroU64::MIN.checked_add(treasury_utxo_count).unwrap();
-        self.treasury_utxo_count
-            .put(rwtxn, &sidechain_number, &new_treasury_utxo_count)?;
-        self.ctip.put(rwtxn, &sidechain_number, ctip)?;
-        self.ctip_outpoint_to_value_seq.put(
-            rwtxn,
-            &ctip.outpoint,
-            &(sidechain_number, ctip.value, sequence_number),
-        )?;
-        Ok(sequence_number)
-    }
-
-    /// Delete ctip, as part of a block disconnect
-    pub fn delete_ctip(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: SidechainNumber,
-    ) -> Result<(), db::Error> {
-        let ctip = self.ctip.get(rwtxn, &sidechain_number)?;
-        let _ = self
-            .ctip_outpoint_to_value_seq
-            .delete(rwtxn, &ctip.outpoint)?;
-        let treasury_utxo_count = self.treasury_utxo_count.get(rwtxn, &sidechain_number)?;
-        let sequence_number = treasury_utxo_count.get() - 1;
-        if let Some(sequence_number) = NonZeroU64::new(sequence_number) {
-            self.treasury_utxo_count
-                .put(rwtxn, &sidechain_number, &sequence_number)?;
-        } else {
-            let _ = self.treasury_utxo_count.delete(rwtxn, &sidechain_number)?;
-        }
-        let _ = self
-            .slot_sequence_to_treasury_utxo
-            .delete(rwtxn, &(sidechain_number, sequence_number))?;
-        let prev_ctip_sequence_number = sequence_number.checked_sub(1);
-        match prev_ctip_sequence_number {
-            Some(prev_ctip_sequence_number) => {
-                let prev_treasury_utxo = self
-                    .slot_sequence_to_treasury_utxo
-                    .get(rwtxn, &(sidechain_number, prev_ctip_sequence_number))?;
-                let ctip = Ctip {
-                    outpoint: prev_treasury_utxo.outpoint,
-                    value: prev_treasury_utxo.total_value,
-                };
-                self.ctip.put(rwtxn, &sidechain_number, &ctip)?;
-            }
-            None => {
-                let _ = self.ctip.delete(rwtxn, &sidechain_number)?;
-            }
-        }
-        Ok(())
-    }
-
-    // Store a new active sidechain
-    pub fn put_sidechain(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-        sidechain: &Sidechain,
-    ) -> Result<(), db::Error> {
-        if !self.pending_m6ids.contains_key(rwtxn, sidechain_number)? {
-            self.pending_m6ids
-                .put(rwtxn, sidechain_number, &PendingM6ids::new())?;
-        }
-        self.sidechain.put(rwtxn, sidechain_number, sidechain)?;
-        Ok(())
-    }
-
-    // Delete an active sidechain, during a block disconnect
-    pub fn delete_sidechain(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-    ) -> Result<(), db::Error> {
-        let _ = self.pending_m6ids.delete(rwtxn, sidechain_number)?;
-        let _ = self.sidechain.delete(rwtxn, sidechain_number)?;
-        Ok(())
-    }
-
-    /// Apply the provided function to pending withdrawals for an active
-    /// sidechain, and write the modified pending withdrawals.
-    pub fn with_pending_withdrawals<T, F>(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-        f: F,
-    ) -> Result<T, db::Error>
-    where
-        F: FnOnce(&mut PendingM6ids) -> T,
-    {
-        let mut pending_m6ids = self.pending_m6ids.get(rwtxn, sidechain_number)?;
-        let res = f(&mut pending_m6ids);
-        let () = self
-            .pending_m6ids
-            .put(rwtxn, sidechain_number, &pending_m6ids)?;
-        Ok(res)
-    }
-
-    /// Apply the provided function to the specified entry for an active
-    /// sidechain.
-    pub fn with_pending_withdrawal_entry<T, F>(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-        m6id: M6id,
-        f: F,
-    ) -> Result<T, db::Error>
-    where
-        F: FnOnce(ordermap::map::Entry<'_, M6id, PendingM6idInfo>) -> T,
-    {
-        self.with_pending_withdrawals(rwtxn, sidechain_number, |pending_withdrawals| {
-            f(pending_withdrawals.entry(m6id))
-        })
-    }
-
-    /// Store a new pending M6id for an active sidechain.
-    pub fn put_pending_m6id(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-        m6id: M6id,
-        proposal_height: u32,
-    ) -> Result<(), db::Error> {
-        self.with_pending_withdrawal_entry(rwtxn, sidechain_number, m6id, |entry| match entry {
-            ordermap::map::Entry::Occupied(mut entry) => {
-                _ = entry.insert(PendingM6idInfo::new(proposal_height))
-            }
-            ordermap::map::Entry::Vacant(entry) => {
-                _ = entry.insert(PendingM6idInfo::new(proposal_height))
-            }
-        })
-    }
-
-    /// Delete a pending withdrawal for an active sidechain
-    pub fn delete_pending_withdrawal(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-        m6id: M6id,
-    ) -> Result<(), db::Error> {
-        self.with_pending_withdrawal_entry(rwtxn, sidechain_number, m6id, |entry| match entry {
-            ordermap::map::Entry::Occupied(entry) => {
-                _ = entry.remove();
-            }
-            ordermap::map::Entry::Vacant(_) => (),
-        })
-    }
-
-    /// Downvote all pending withdrawals
-    pub fn alarm_pending_m6ds(
-        &self,
-        rwtxn: &mut RwTxn,
-        sidechain_number: &SidechainNumber,
-    ) -> Result<(), db::Error> {
-        self.with_pending_withdrawals(rwtxn, sidechain_number, |pending_m6ids| {
-            pending_m6ids
-                .values_mut()
-                .for_each(|info| info.vote_count = info.vote_count.saturating_sub(1))
-        })
-    }
-}
+/// Name of the schema-version marker file inside the datadir.
+const DB_VERSION_FILE: &str = "db_version";
 
 #[derive(transitive::Transitive, Debug, Error)]
 #[expect(clippy::duplicated_attributes)]
@@ -317,30 +37,72 @@ pub enum CreateDbsError {
     },
     #[error(transparent)]
     Env(#[from] env::Error),
+    #[error(
+        "Validator database at `{path}` has schema version {found} but this \
+         enforcer requires version {DB_VERSION}. Delete the datadir and \
+         resync (the enforcer state is rebuilt from the chain)."
+    )]
+    IncompatibleSchema { path: PathBuf, found: u32 },
+    #[error("Error reading database version file (`{path}`)")]
+    ReadVersion {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("Error writing database version file (`{path}`)")]
+    WriteVersion {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
-pub type ProposalIdToSidechain =
-    DatabaseUnique<SerdeBincode<SidechainProposalId>, SerdeBincode<Sidechain>>;
+/// Check or stamp the schema-version marker for a database directory.
+///
+/// * Fresh directory (no LMDB data file): stamp [`DB_VERSION`].
+/// * Existing database with a matching marker: ok.
+/// * Existing database with a missing or older marker: incompatible — the
+///   caller must delete the datadir and resync.
+fn check_or_stamp_db_version(db_dir: &Path) -> Result<(), CreateDbsError> {
+    let version_path = db_dir.join(DB_VERSION_FILE);
+    let has_existing_db = db_dir.join("data.mdb").exists();
+    let found: Option<u32> = match std::fs::read_to_string(&version_path) {
+        Ok(contents) => contents.trim().parse().ok(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(CreateDbsError::ReadVersion {
+                path: version_path,
+                source: err,
+            });
+        }
+    };
+    match found {
+        Some(version) if version == DB_VERSION => Ok(()),
+        Some(version) => Err(CreateDbsError::IncompatibleSchema {
+            path: db_dir.to_owned(),
+            found: version,
+        }),
+        None if has_existing_db => Err(CreateDbsError::IncompatibleSchema {
+            path: db_dir.to_owned(),
+            found: 1,
+        }),
+        None => std::fs::write(&version_path, format!("{DB_VERSION}\n")).map_err(|err| {
+            CreateDbsError::WriteVersion {
+                path: version_path,
+                source: err,
+            }
+        }),
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Dbs {
     env: Env,
-    pub active_sidechains: ActiveSidechainDbs,
     pub block_hashes: BlockHashDbs,
-    #[cfg(feature = "bip360")]
-    pub p2mr_utxos: p2mr_utxos::P2mrUtxoDbs,
     /// Tip that the enforcer is synced to
     pub current_chain_tip: DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
-    pub _leading_by_50: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
-    pub _previous_votes: DatabaseUnique<UnitKey, SerdeBincode<Vec<[u8; 32]>>>,
-    pub proposal_id_to_sidechain: ProposalIdToSidechain,
 }
 
 impl Dbs {
-    #[cfg(feature = "bip360")]
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4 + 1;
-    #[cfg(not(feature = "bip360"))]
-    const NUM_DBS: u32 = ActiveSidechainDbs::NUM_DBS + BlockHashDbs::NUM_DBS + 4;
+    const NUM_DBS: u32 = BlockHashDbs::NUM_DBS + 1 + 1;
 
     pub fn new(data_dir: &Path, network: bitcoin::Network) -> Result<Self, CreateDbsError> {
         let db_dir = data_dir.join(format!("{network}.mdb"));
@@ -351,6 +113,7 @@ impl Dbs {
             };
             return Err(err);
         }
+        let () = check_or_stamp_db_version(&db_dir)?;
         let env = {
             // 1 GB
             const GB: usize = 1024 * 1024 * 1024;
@@ -361,28 +124,15 @@ impl Dbs {
             unsafe { Env::open(&env_opts, &db_dir) }?
         };
         let mut rwtxn = env.write_txn()?;
-        let active_sidechains = ActiveSidechainDbs::new(&env, &mut rwtxn)?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
         let current_chain_tip = DatabaseUnique::create(&env, &mut rwtxn, "current_chain_tip")?;
-        let leading_by_50 = DatabaseUnique::create(&env, &mut rwtxn, "leading_by_50")?;
-        let previous_votes = DatabaseUnique::create(&env, &mut rwtxn, "previous_votes")?;
-        let proposal_id_to_sidechain =
-            DatabaseUnique::create(&env, &mut rwtxn, "proposal_id_to_sidechain")?;
-        #[cfg(feature = "bip360")]
-        let p2mr_utxos = p2mr_utxos::P2mrUtxoDbs::new(&env, &mut rwtxn)?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
         Ok(Self {
             env,
-            active_sidechains,
             block_hashes,
-            #[cfg(feature = "bip360")]
-            p2mr_utxos,
             current_chain_tip,
-            _leading_by_50: leading_by_50,
-            _previous_votes: previous_votes,
-            proposal_id_to_sidechain,
         })
     }
 
@@ -399,5 +149,54 @@ impl Dbs {
 
     pub fn write_txn(&self) -> Result<RwTxn<'_>, env::error::WriteTxn> {
         self.env.write_txn()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_datadir_is_stamped_with_current_version() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let dbs = Dbs::new(dir.path(), bitcoin::Network::Regtest);
+        assert!(dbs.is_ok());
+        let marker = dir.path().join("regtest.mdb").join(DB_VERSION_FILE);
+        let contents = std::fs::read_to_string(marker).unwrap();
+        assert_eq!(contents.trim(), DB_VERSION.to_string());
+        // Re-opening succeeds against the stamped marker.
+        drop(dbs);
+        assert!(Dbs::new(dir.path(), bitcoin::Network::Regtest).is_ok());
+    }
+
+    #[test]
+    fn unversioned_existing_database_is_rejected() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db_dir = dir.path().join("regtest.mdb");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        // Simulate a pre-version-marker (v1) database.
+        std::fs::write(db_dir.join("data.mdb"), b"stale").unwrap();
+        let Err(err) = Dbs::new(dir.path(), bitcoin::Network::Regtest) else {
+            panic!("expected IncompatibleSchema error");
+        };
+        assert!(
+            matches!(err, CreateDbsError::IncompatibleSchema { found: 1, .. }),
+            "expected IncompatibleSchema, got: {err}"
+        );
+    }
+
+    #[test]
+    fn older_version_marker_is_rejected() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let db_dir = dir.path().join("regtest.mdb");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        std::fs::write(db_dir.join(DB_VERSION_FILE), b"1\n").unwrap();
+        let Err(err) = Dbs::new(dir.path(), bitcoin::Network::Regtest) else {
+            panic!("expected IncompatibleSchema error");
+        };
+        assert!(
+            matches!(err, CreateDbsError::IncompatibleSchema { found: 1, .. }),
+            "expected IncompatibleSchema, got: {err}"
+        );
     }
 }

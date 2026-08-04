@@ -6,7 +6,12 @@ use std::{
 };
 
 use bdk_wallet::bip39::{Language, Mnemonic};
-use bip300301_enforcer_lib::{
+use bitcoin::ScriptBuf;
+use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
+use connectrpc::Router;
+use connectrpc_health::{HealthExt, HealthService, StaticChecker};
+use connectrpc_reflection::Reflector;
+use cusf_enforcer_lib::{
     block_producer::BlockProducer,
     cli::{self, WalletSyncSource},
     errors::ErrorChain,
@@ -26,12 +31,6 @@ use bip300301_enforcer_lib::{
     version,
     wallet::{self, error::BitcoinCoreRPC},
 };
-use bitcoin::ScriptBuf;
-use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
-use clap::Parser;
-use connectrpc::Router;
-use connectrpc_health::{HealthExt, HealthService, StaticChecker};
-use connectrpc_reflection::Reflector;
 use cusf_enforcer_mempool::cusf_block_producer::CusfBlockProducer;
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
@@ -55,8 +54,8 @@ mod logging;
 
 /// The enforcer, in one of its three modes:
 ///
-/// * validator only — consensus, no drivechain policy,
-/// * block producer — consensus + drivechain policy, no keys,
+/// * validator only — consensus, no block-production policy,
+/// * block producer — consensus + block-production policy, no keys,
 /// * wallet — a block producer that also holds keys.
 ///
 /// This picks how blocks are applied, not which RPCs are served: producer mode
@@ -421,7 +420,7 @@ async fn run_connect_server(
     // in buf.gen.yaml). Each generated package embeds the full file closure, so
     // any one package's pool covers every service.
     let reflector = Reflector::from_descriptor_pool(Arc::clone(
-        bip300301_enforcer_lib::proto::mainchain::descriptor_pool(),
+        cusf_enforcer_lib::proto::mainchain::descriptor_pool(),
     ))
     .map_err(error::ConnectServer::Reflection)?
     .with_services(service_names.iter().copied());
@@ -613,10 +612,8 @@ async fn get_zmq_addr_sequence(
             help(
                 "Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"
             ),
-            code(bip300301_enforcer::zmq_pubsequence_notification_missing),
-            url(
-                "https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements"
-            )
+            code(cusf_enforcer::zmq_pubsequence_notification_missing),
+            url("https://github.com/layerTwo-Labs/cusf_enforcer?tab=readme-ov-file#requirements")
         )]
         struct ZmqNotificationMissing;
 
@@ -723,7 +720,7 @@ where
                 #[error(
                     "Bitcoin Core has no P2P peers connected and refuses to serve block template requests"
                 )]
-                #[diagnostic(code(bip300301_enforcer::bitcoin_core_not_connected))]
+                #[diagnostic(code(cusf_enforcer::bitcoin_core_not_connected))]
                 struct NotConnected;
 
                 return Err(NotConnected.into());
@@ -848,9 +845,6 @@ fn report_sync_state(validator: &Validator, state_file: &Path) -> Result<SyncSta
                 state_digest = %summary.digest(),
                 tip_hash = %summary.tip_hash,
                 tip_height = summary.tip_height,
-                sidechain_proposals = summary.sidechains.len(),
-                active_sidechains = summary.active_sidechain_count(),
-                pending_withdrawal_bundles = summary.pending_withdrawal_count(),
                 "writing consensus state summary to {}", state_file.display(),
             );
             let json = summary.to_json_pretty();
@@ -917,14 +911,6 @@ fn verify_against_reference(
         "  reference digest: {}..",
         short(&reference.digest())
     );
-
-    let sidechain_diffs = produced.sidechain_diffs(reference);
-    if !sidechain_diffs.is_empty() {
-        let _ = write!(report, "\nsidechain differences:");
-        for diff in sidechain_diffs {
-            let _ = write!(report, "\n  - {diff}");
-        }
-    }
 
     Err(miette!("{report}"))
 }
@@ -1056,7 +1042,7 @@ async fn main() -> Result<()> {
         default_hook(info); // Panics are bad. re-throw!
     }));
 
-    let cli = cli::Config::parse();
+    let (cli, arg_matches) = cli::Config::parse_with_matches();
     // Assign the tracing guard to a variable so that it is dropped when the end of main is reached.
     let _tracing_guard = logging::set_tracing_subscriber(
         cli.log_formatter(),
@@ -1068,15 +1054,9 @@ async fn main() -> Result<()> {
         log_dir = %cli.log_dir().display(),
         git_hash = cli.git_hash(),
         build = if cfg!(debug_assertions) { "debug" } else { "release" },
-        drivechain = cfg!(feature = "drivechain"),
-        bip360 = cfg!(feature = "bip360"),
-        rules_workers = cli.rules_workers.len(),
-        "Starting up bip300301_enforcer",
+        "Starting up cusf_enforcer",
     );
-
-    // Remote rule workers (UDS) are built after Validator::new and installed via
-    // set_remote_rules so BlockHandler mempool/connect AND remote ballots
-    // (fail-closed Timeout/Failure/Reject). See docs/MULTI_ENFORCER.md.
+    cli::log_effective_config(&arg_matches);
 
     // Validate the verification reference early, before creating node connections etc.
     let verify_reference = cli
@@ -1186,7 +1166,7 @@ async fn main() -> Result<()> {
                 };
                 #[derive(Debug, Diagnostic, Error)]
                 #[error("Invalid Bitcoin Core RPC credentials")]
-                #[diagnostic(code(bip300301_enforcer::rpc_credentials))]
+                #[diagnostic(code(cusf_enforcer::rpc_credentials))]
                 struct UnauthorizedError {
                     #[help]
                     message: String,
@@ -1237,25 +1217,11 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Resolve BIP300 thresholds + enforcement activation height: from the
-    // explicit --network-preset if given, otherwise from the node's network.
-    let network_params = match cli.network_preset {
-        Some(preset) => {
-            let params = preset.params();
-            tracing::info!(
-                ?preset,
-                bip300_activation_height = params.bip300_activation_height,
-                thresholds = ?params.thresholds,
-                "Applying network parameter preset"
-            );
-            params
-        }
-        None => NetworkParams::for_network(info.chain),
-    };
+    let network_params = NetworkParams::for_network(info.chain);
 
     // Both wallet data and validator data are stored under the same root
     // directory. Add a subdirectories to clearly indicate which
-    // is which. Presets get their own namespace (e.g. `main-drynet1`)
+    // is which. Parameter variants get their own namespace
     let chain_dir_name = match network_params.datadir_suffix {
         Some(suffix) => format!("{}-{}", info.chain, suffix),
         None => info.chain.to_string(),
@@ -1268,34 +1234,16 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(data_dir).into_diagnostic()?;
     }
 
-    let mut validator = Validator::new(
+    let validator = Validator::new(
         mainchain_client.clone(),
         mainchain_rest_client,
         cli.node_blocks_dir_opts.dir.clone(),
         &validator_data_dir,
         info.chain,
         network_params,
-        #[cfg(feature = "bip360")]
         cli.activation_height,
-        #[cfg(feature = "bip360")]
-        cli.pqc_verify_budget_ms,
     )
     .into_diagnostic()?;
-
-    // Wire `--rules-worker` remotes into hot-path consent (mempool + connect).
-    {
-        use bip300301_enforcer_lib::validator::rules::ipc::build_remote_backend_engine;
-        let timeout = cli.rules_worker_timeout();
-        let engine = build_remote_backend_engine(&cli.rules_workers, timeout);
-        if !cli.rules_workers.is_empty() {
-            tracing::info!(
-                registered = ?engine.registered_ids(),
-                timeout_ms = timeout.as_millis() as u64,
-                "remote rules workers on hot path (UDS; timeout/failure = Reject)"
-            );
-        }
-        validator.set_remote_rules(engine);
-    }
 
     let signet_challenge = if info.chain == bitcoin::Network::Signet {
         let block_template = get_block_template(&mainchain_client, info.chain).await?;
@@ -1319,9 +1267,9 @@ async fn main() -> Result<()> {
             )]
             #[diagnostic(
                 help("either run against the L2L signet, or your own custom signet"),
-                code(bip300301_enforcer::standard_signet),
+                code(cusf_enforcer::standard_signet),
                 url(
-                    "https://github.com/layerTwo-Labs/bip300301_enforcer?tab=readme-ov-file#requirements"
+                    "https://github.com/layerTwo-Labs/cusf_enforcer?tab=readme-ov-file#requirements"
                 )
             )]
             struct StandardSignetError;
@@ -1349,9 +1297,24 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
 
+    // The producer's `getblocktemplate` queries go to the enforcer's own
+    // block template server when it is enabled. Without the server, fall
+    // back to Bitcoin Core's templates.
+    let gbt_client = if cli.enable_block_template_server {
+        bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClientBuilder::default()
+            .build(format!("http://{}", cli.serve_rpc_addr))
+            .map_err(|err| {
+                miette::Report::from_err(err)
+                    .wrap_err("failed to create client for the block template server")
+            })?
+    } else {
+        mainchain_client.clone()
+    };
+
     let producer = BlockProducer::new(
         validator.clone(),
         mainchain_client.clone(),
+        gbt_client,
         cli.clone(),
         signet_challenge.clone(),
     )?;
@@ -1379,7 +1342,7 @@ async fn main() -> Result<()> {
         if !index_info.contains_key("txindex") {
             #[derive(Debug, Diagnostic, Error)]
             #[error("`txindex` is not enabled on the mainchain client")]
-            #[diagnostic(code(bip300301_enforcer::txindex_not_enabled))]
+            #[diagnostic(code(cusf_enforcer::txindex_not_enabled))]
             struct TxindexNotEnabled;
 
             return Err(TxindexNotEnabled.into());

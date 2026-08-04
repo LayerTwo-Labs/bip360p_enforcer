@@ -18,6 +18,7 @@ mod mine;
 struct Inner {
     validator: Validator,
     main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+    gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
     config: crate::cli::Config,
     // Always Some(_) on signets
     signet_challenge: Option<bitcoin::ScriptBuf>,
@@ -40,6 +41,7 @@ impl BlockProducer {
     pub fn new(
         validator: Validator,
         main_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
+        gbt_client: bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient,
         config: crate::cli::Config,
         signet_challenge: Option<bitcoin::ScriptBuf>,
     ) -> Result<Self, error::InitDbConnection> {
@@ -47,6 +49,7 @@ impl BlockProducer {
             inner: Arc::new(Inner {
                 validator,
                 main_client,
+                gbt_client,
                 config,
                 signet_challenge,
                 last_gbt_error: parking_lot::RwLock::new(None),
@@ -62,6 +65,10 @@ impl BlockProducer {
     /// JSON-RPC client for the Bitcoin Core node.
     pub(crate) fn main_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
         &self.inner.main_client
+    }
+
+    pub(crate) fn gbt_client(&self) -> &bitcoin_jsonrpsee::jsonrpsee::http_client::HttpClient {
+        &self.inner.gbt_client
     }
 
     pub(crate) fn config(&self) -> &crate::cli::Config {
@@ -166,7 +173,7 @@ impl CusfBlockProducer for BlockProducer {
     /// 2. it fetches the initial block template (this function),
     /// 3. it processes that further and returns it to the client.
     ///
-    /// This is the hook for adding drivechain coinbase messages to the
+    /// This is the hook for adding rule-set coinbase outputs to the
     /// about-to-be-generated block.
     async fn initial_block_template<const COINBASE_TXN: bool>(
         &self,

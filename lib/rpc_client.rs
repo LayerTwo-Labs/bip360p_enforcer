@@ -35,7 +35,12 @@ pub fn create_client(conf: &NodeRpcConfig) -> Result<HttpClient, Error> {
     }
 
     let mut conf_user = conf.user.clone().unwrap_or_default();
-    let mut conf_pass = conf.pass.clone().unwrap_or_default();
+    // The secret is exposed here, at the boundary where it is handed to the
+    // RPC client, and nowhere else.
+    let mut conf_pass = conf
+        .pass
+        .as_ref()
+        .map_or_else(String::new, |pass| pass.expose().to_owned());
 
     if conf.cookie_path.is_some() {
         let cookie_path = conf.cookie_path.clone().unwrap();
@@ -128,8 +133,8 @@ where
 }
 
 /// Broadcasts a transaction to the Bitcoin network.
-/// Returns `Some(txid)` if broadcast successfully, `None` if the tx failed to
-/// broadcast due to the node not supporting OP_DRIVECHAIN
+/// Returns `Some(txid)` if broadcast successfully, `None` if the tx was
+/// rejected as nonstandard (NOPx / upgradable-opcode policy)
 pub async fn broadcast_transaction<RpcClient>(
     rpc_client: &RpcClient,
     tx: &bdk_wallet::bitcoin::Transaction,
@@ -137,16 +142,15 @@ pub async fn broadcast_transaction<RpcClient>(
 where
     RpcClient: MainClient + Sync,
 {
-    const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG: &str =
+    const NONSTANDARD_NOPX_ERR_MSG: &str =
         "non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)";
     // Bitcoind v30.0 changed the error message
-    const OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0: &str =
+    const NONSTANDARD_NOPX_ERR_MSG_V30_0: &str =
         "mempool-script-verify-flag-failed (NOPx reserved for soft-fork upgrades)";
     // We used to check the exact error message. Looks like this slightly
     // varies across versions. Therefore use a substring check.
     broadcast_transaction_with_tolerance(rpc_client, tx, |_code, msg| {
-        msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG)
-            || msg.contains(OP_DRIVECHAIN_NOT_SUPPORTED_ERR_MSG_V30_0)
+        msg.contains(NONSTANDARD_NOPX_ERR_MSG) || msg.contains(NONSTANDARD_NOPX_ERR_MSG_V30_0)
     })
     .await
 }

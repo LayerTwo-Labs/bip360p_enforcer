@@ -190,9 +190,9 @@ mod tests {
         assert_eq!(magic, Magic::from_bytes([0x7e, 0xc6, 0x53, 0xa5]));
     }
 
-    // drivechain signet challenge
+    // example signet challenge (a real 1-of-1 CHECKMULTISIG signet script)
     #[test]
-    fn test_drivechain_magic() {
+    fn signet_magic_matches_known_challenge() {
         let signet_challenge =
             bitcoin::ScriptBuf::from_hex("a91484fa7c2460891fe5212cb08432e21a4207909aa987").unwrap();
         let magic = compute_signet_magic(signet_challenge.as_script());

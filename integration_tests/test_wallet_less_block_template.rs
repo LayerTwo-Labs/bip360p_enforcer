@@ -1,6 +1,6 @@
 //! Block templates without a wallet, against a node without `txindex`.
 
-use bip300301_enforcer_lib::bins::CommandExt as _;
+use cusf_enforcer_lib::bins::CommandExt as _;
 use futures::channel::mpsc;
 
 use crate::{
@@ -22,7 +22,7 @@ pub async fn test_wallet_less_block_template(setup: PreSetup) -> anyhow::Result<
     // Verify there's really no wallet here
     let balance = post_setup
         .wallet_service_client
-        .get_balance(bip300301_enforcer_lib::proto::mainchain::GetBalanceRequest::default())
+        .get_balance(cusf_enforcer_lib::proto::mainchain::GetBalanceRequest::default())
         .await;
     let status = balance.err().ok_or_else(|| {
         anyhow::anyhow!("GetBalance succeeded, but the enforcer was started without a wallet")

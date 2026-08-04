@@ -20,7 +20,7 @@ pub enum MainRestClientError {
     #[error("Invalid block header format")]
     InvalidBlockHeader,
     #[error("Bitcoin Core REST server is not enabled")]
-    #[diagnostic(code(bip300301_enforcer::rest_server_not_enabled))]
+    #[diagnostic(code(cusf_enforcer::rest_server_not_enabled))]
     #[help("do this with the `-rest` flag or `rest=1` in your Bitcoin Core configuration file")]
     RestServerNotEnabled,
     #[error("Bitcoin Core REST server at `{url}` is not reachable")]

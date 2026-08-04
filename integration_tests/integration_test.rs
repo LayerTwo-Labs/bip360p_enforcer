@@ -1,6 +1,6 @@
 use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
-use bip300301_enforcer_lib::{
+use cusf_enforcer_lib::{
     bins::CommandExt as _,
     proto::mainchain::{CreateNewAddressRequest, GetInfoRequest},
 };
@@ -234,162 +234,7 @@ pub fn tests(
 
     async_trials.extend(unconfirmed_transactions_tests);
 
-    #[cfg(feature = "bip360")]
-    {
-        let p2p_e2e_trial: TestTrial = {
-            let name = crate::bip360_dual_node::TEST_NAME;
-            AsyncTrial::new(
-                name,
-                Box::pin({
-                    let bin_paths = bin_paths.clone();
-                    let file_registry = file_registry.clone();
-                    async move {
-                        let test_future =
-                            crate::test_bip360_p2p_mempool_e2e::test_bip360_p2p_mempool_e2e(
-                                bin_paths,
-                                file_registry,
-                            )
-                            .instrument(tracing::info_span!("test", name = %name));
-                        catch_unwind(test_future).await
-                    }
-                }),
-                file_registry.clone(),
-                failure_collector.clone(),
-            )
-        };
-        async_trials.push(p2p_e2e_trial);
-
-        let tier_a_trial: TestTrial = {
-            let name = crate::bip360_dual_node::TIER_A_TEST_NAME;
-            AsyncTrial::new(
-                name,
-                Box::pin({
-                    let bin_paths = bin_paths.clone();
-                    let file_registry = file_registry.clone();
-                    async move {
-                        let test_future =
-                            crate::test_bip360_kitchen_sink_tier_a::test_bip360_kitchen_sink_tier_a(
-                                bin_paths,
-                                file_registry,
-                            )
-                            .instrument(tracing::info_span!("test", name = %name));
-                        catch_unwind(test_future).await
-                    }
-                }),
-                file_registry.clone(),
-                failure_collector.clone(),
-            )
-        };
-        async_trials.push(tier_a_trial);
-
-        // Tier B TB-sendraw: opt-in Bob mempool shapes 1 Schnorr + 2 Core hybrid
-        // (BIP360_TIER_B=1). Not in it-all. Green twin: bip360_tier_b_cusf_miner.
-        let tier_b_trial: TestTrial = {
-            let name = crate::bip360_dual_node::TIER_B_TEST_NAME;
-            AsyncTrial::new(
-                name,
-                Box::pin({
-                    let bin_paths = bin_paths.clone();
-                    let file_registry = file_registry.clone();
-                    async move {
-                        let test_future =
-                            crate::test_bip360_tier_b_p2mr_mempool::test_bip360_tier_b_p2mr_mempool(
-                                bin_paths,
-                                file_registry,
-                            )
-                            .instrument(tracing::info_span!("test", name = %name));
-                        catch_unwind(test_future).await
-                    }
-                }),
-                file_registry.clone(),
-                failure_collector.clone(),
-            )
-        };
-        async_trials.push(tier_b_trial);
-
-        // Tier B TB-factory: dual stock — Miner block factory + Alice tip/enforcer.
-        // Not in it-all (dual-process slower). Docs: TIER_B_CUSF_MINER.md § factory.
-        let tier_b_factory_trial: TestTrial = {
-            let name = crate::bip360_dual_node::TIER_B_FACTORY_TEST_NAME;
-            AsyncTrial::new(
-                name,
-                Box::pin({
-                    let bin_paths = bin_paths.clone();
-                    let file_registry = file_registry.clone();
-                    async move {
-                        let test_future = crate::test_bip360_tier_b_cusf_factory::test_bip360_tier_b_cusf_factory(
-                            bin_paths,
-                            file_registry,
-                        )
-                        .instrument(tracing::info_span!("test", name = %name));
-                        catch_unwind(test_future).await
-                    }
-                }),
-                file_registry.clone(),
-                failure_collector.clone(),
-            )
-        };
-        async_trials.push(tier_b_factory_trial);
-
-        // Bob-mined P2MR block vs Alice on-disk blk*.dat (needs BITCOIND_P2MR). Not in it-all.
-        let blk_dat_e2e_trial: TestTrial = {
-            let name = crate::test_bip360_blk_dat_e2e::TEST_NAME;
-            AsyncTrial::new(
-                name,
-                Box::pin({
-                    let bin_paths = bin_paths.clone();
-                    let file_registry = file_registry.clone();
-                    async move {
-                        let test_future = crate::test_bip360_blk_dat_e2e::test_bip360_blk_dat_e2e(
-                            bin_paths,
-                            file_registry,
-                        )
-                        .instrument(tracing::info_span!("test", name = %name));
-                        catch_unwind(test_future).await
-                    }
-                }),
-                file_registry.clone(),
-                failure_collector.clone(),
-            )
-        };
-        async_trials.push(blk_dat_e2e_trial);
-    }
-
     // FINAL_REPORT claim: testmempoolaccept never inserts (control: sendraw does).
-    async_trials.push(new_trial_with_setup_opts(
-        "cusf_claim_testmempoolaccept_no_insert".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::NoMempool,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::setup::SetupOpts {
-            // Mature coinbases in bitcoind wallet; no electrs needed.
-            enforcer_wallet: crate::setup::EnforcerWallet::Disabled,
-            bitcoind_args: vec!["-fallbackfee=0.0002".to_string()],
-            ..Default::default()
-        },
-        crate::test_cusf_claims::test_cusf_claim_testmempoolaccept_no_insert,
-    ));
-
-    #[cfg(feature = "bip360")]
-    {
-        // FINAL_REPORT claim: stock Core rejects P2MR *spends* via mempool RPC.
-        async_trials.push(new_trial(
-            "cusf_claim_stock_rejects_p2mr_spend".to_string(),
-            TestSetupComponents {
-                bin_paths: bin_paths.clone(),
-                network: Network::Regtest,
-                mode: Mode::NoMempool,
-                file_registry: file_registry.clone(),
-                failure_collector: failure_collector.clone(),
-            },
-            crate::test_cusf_claims::test_cusf_claim_stock_rejects_p2mr_spend,
-        ));
-    }
-
     async_trials.extend([new_trial(
         "file_based_block_parser".to_string(),
         TestSetupComponents {
@@ -428,9 +273,50 @@ pub fn tests(
         crate::test_wallet_less_block_template::test_wallet_less_block_template,
     ));
     // Uses `new_trial`: it pre-populates the data dir with a pre-split
-    // wallet DB before starting the enforcer.
-    async_trials.push(new_trial(
-        "seed_migration".to_string(),
+    // wallet DB before starting the enforcer.    // Needs direct `bin_paths` (respawns the enforcer/electrs mid-test),
+    // so it uses a bespoke trial rather than `new_trial_with_setup`.
+    async_trials.push({
+        let name = crate::test_wallet_reorg_multi_block::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                async move {
+                    let test_future =
+                        crate::test_wallet_reorg_multi_block::test_wallet_reorg_multi_block(
+                            bin_paths,
+                        )
+                        .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    });
+
+    // Needs direct `bin_paths` (to respawn the enforcer mid-test), so it uses
+    // a bespoke trial rather than `new_trial_with_setup`.
+    async_trials.push({
+        let name = crate::test_wallet_large_gap_sync::TEST_NAME;
+        AsyncTrial::new(
+            name,
+            Box::pin({
+                let bin_paths = bin_paths.clone();
+                async move {
+                    let test_future =
+                        crate::test_wallet_large_gap_sync::test_wallet_large_gap_sync(bin_paths)
+                            .instrument(tracing::info_span!("test", name = %name));
+                    catch_unwind(test_future).await
+                }
+            }),
+            file_registry.clone(),
+            failure_collector.clone(),
+        )
+    });
+
+    async_trials.push(new_trial_with_setup(
+        crate::test_no_secrets_in_logs::TEST_NAME.to_string(),
         TestSetupComponents {
             bin_paths: bin_paths.clone(),
             network: Network::Regtest,
@@ -438,182 +324,8 @@ pub fn tests(
             file_registry: file_registry.clone(),
             failure_collector: failure_collector.clone(),
         },
-        crate::test_seed_migration::test_seed_migration,
+        crate::test_no_secrets_in_logs::test_no_secrets_in_logs,
     ));
-    #[cfg(feature = "bip360")]
-    fn bip360_trial_components(
-        bin_paths: BinPaths,
-        file_registry: TestFileRegistry,
-        failure_collector: TestFailureCollector,
-    ) -> TestSetupComponents {
-        TestSetupComponents {
-            bin_paths,
-            network: Network::Regtest,
-            // `new_trial` does not call `setup`; each BIP360 trial invokes
-            // `pre_setup.setup(Mode::NoMempool, bip360_setup_opts(), …)` itself.
-            mode: Mode::NoMempool,
-            file_registry,
-            failure_collector,
-        }
-    }
-
-    #[cfg(feature = "bip360")]
-    macro_rules! bip360_trial {
-        ($name:expr, $test_fn:expr) => {
-            async_trials.push(new_trial(
-                $name.to_string(),
-                bip360_trial_components(
-                    bin_paths.clone(),
-                    file_registry.clone(),
-                    failure_collector.clone(),
-                ),
-                $test_fn,
-            ));
-        };
-    }
-    #[cfg(feature = "bip360")]
-    {
-        bip360_trial!(
-            "bip360_invalid_block",
-            crate::test_bip360_invalid_block::test_bip360_invalid_block
-        );
-        bip360_trial!(
-            "bip360_valid_schnorr_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_schnorr_spend
-        );
-        bip360_trial!(
-            "bip360_valid_mldsa_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_mldsa_spend
-        );
-        bip360_trial!(
-            "bip360_valid_slh_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_slh_spend
-        );
-        bip360_trial!(
-            "bip360_valid_cross_block_schnorr_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_cross_block_schnorr_spend
-        );
-        bip360_trial!(
-            "bip360_valid_cross_block_mldsa_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_cross_block_mldsa_spend
-        );
-        bip360_trial!(
-            "bip360_valid_cross_block_slh_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_cross_block_slh_spend
-        );
-        bip360_trial!(
-            "bip360_invalid_signature",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_signature
-        );
-        bip360_trial!(
-            "bip360_invalid_pubkey_size",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_pubkey_size
-        );
-        bip360_trial!(
-            "bip360_invalid_merkle_path",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_merkle_path
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_signature_schnorr",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_signature_schnorr
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_signature_mldsa",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_signature_mldsa
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_signature_slh",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_signature_slh
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_merkle_path_schnorr",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_merkle_path_schnorr
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_merkle_path_mldsa",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_merkle_path_mldsa
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_merkle_path_slh",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_merkle_path_slh
-        );
-        bip360_trial!(
-            "bip360_invalid_cross_block_pubkey_size_mldsa",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_cross_block_pubkey_size_mldsa
-        );
-        bip360_trial!(
-            "bip360_valid_hybrid_ec_slh_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_hybrid_ec_slh_spend
-        );
-        bip360_trial!(
-            "bip360_valid_hybrid_ec_slh_cross_block_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_hybrid_ec_slh_cross_block_spend
-        );
-        bip360_trial!(
-            "bip360_invalid_hybrid_ec_slh_tamper_ec_sig",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_tamper_ec_sig
-        );
-        bip360_trial!(
-            "bip360_invalid_hybrid_ec_slh_tamper_slh_sig",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_tamper_slh_sig
-        );
-        bip360_trial!(
-            "bip360_invalid_hybrid_ec_slh_swap_sigs",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_hybrid_ec_slh_swap_sigs
-        );
-        bip360_trial!(
-            "bip360_valid_kitchen_sink_spend",
-            crate::test_bip360_valid_spend::test_bip360_valid_kitchen_sink_spend
-        );
-        bip360_trial!(
-            "bip360_tier_b_cusf_miner",
-            crate::test_bip360_tier_b_cusf_miner::test_bip360_tier_b_cusf_miner
-        );
-        bip360_trial!(
-            "bip360_tier_b_cusf_sidecar",
-            crate::test_bip360_tier_b_cusf_sidecar::test_bip360_tier_b_cusf_sidecar
-        );
-        bip360_trial!(
-            "bip360_invalid_kitchen_sink_tamper_ec_sig",
-            crate::test_bip360_invalid_spend::test_bip360_invalid_kitchen_sink_tamper_ec_sig
-        );
-        bip360_trial!(
-            "bip360_valid_multi_leaf_schnorr_spend",
-            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_schnorr_spend
-        );
-        bip360_trial!(
-            "bip360_valid_multi_leaf_mldsa_spend",
-            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_mldsa_spend
-        );
-        bip360_trial!(
-            "bip360_valid_multi_leaf_slh_spend",
-            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_slh_spend
-        );
-        bip360_trial!(
-            "bip360_valid_multi_leaf_cross_block_mldsa_spend",
-            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_cross_block_mldsa_spend
-        );
-        bip360_trial!(
-            "bip360_valid_multi_leaf_cross_block_schnorr_spend",
-            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_cross_block_schnorr_spend
-        );
-        bip360_trial!(
-            "bip360_valid_multi_leaf_cross_block_slh_spend",
-            crate::test_bip360_multi_leaf::test_bip360_valid_multi_leaf_cross_block_slh_spend
-        );
-        bip360_trial!(
-            "bip360_invalid_multi_leaf_wrong_control_block",
-            crate::test_bip360_multi_leaf::test_bip360_invalid_multi_leaf_wrong_control_block
-        );
-        bip360_trial!(
-            "bip360_invalid_multi_leaf_cross_block_wrong_control_block",
-            crate::test_bip360_multi_leaf::test_bip360_invalid_multi_leaf_cross_block_wrong_control_block
-        );
-        bip360_trial!(
-            "bip360_invalid_multi_leaf_tampered_signature_mldsa",
-            crate::test_bip360_multi_leaf::test_bip360_invalid_multi_leaf_tampered_signature_mldsa
-        );
-    }
 
     async_trials
 }
