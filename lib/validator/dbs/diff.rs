@@ -45,15 +45,28 @@ impl From<db::Error> for UndoError {
     }
 }
 
+impl Diff for crate::validator::pqc::p2mr_utxo::P2mrUtxoBlockDiff {
+    type Dbs = dbs::Dbs;
+    type ApplyError = db::Error;
+    type UndoError = db::Error;
+
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
+        dbs.p2mr_utxos.apply_diff(rwtxn, &self.spent, &self.created)
+    }
+
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), db::Error> {
+        dbs.p2mr_utxos.undo_diff(rwtxn, &self.spent, &self.created)
+    }
+}
+
 /// All state changes a connected block made to the validator databases,
 /// recorded so that [`Diff::undo`] can reverse them on reorg.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[must_use]
 pub struct Block {
-    // Template: no per-block validator state yet. Forks that track state
-    // derived from blocks (e.g. a UTXO subset) add fields here, apply them
-    // in [`Diff::apply`], and reverse them in [`Diff::undo`] so reorgs
-    // roll the state back automatically.
+    /// P2MR UTXO changes applied when this block was connected.
+    #[serde(default)]
+    pub p2mr_utxo: crate::validator::pqc::p2mr_utxo::P2mrUtxoBlockDiff,
 }
 
 impl Diff for Block {
@@ -61,11 +74,15 @@ impl Diff for Block {
     type ApplyError = db::Error;
     type UndoError = UndoError;
 
-    fn apply(&self, _rwtxn: &mut RwTxn, _dbs: &Self::Dbs, _height: u32) -> Result<(), db::Error> {
+    fn apply(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs, height: u32) -> Result<(), db::Error> {
+        let Self { p2mr_utxo } = self;
+        p2mr_utxo.apply(rwtxn, dbs, height)?;
         Ok(())
     }
 
-    fn undo(&self, _rwtxn: &mut RwTxn, _dbs: &Self::Dbs) -> Result<(), UndoError> {
+    fn undo(&self, rwtxn: &mut RwTxn, dbs: &Self::Dbs) -> Result<(), UndoError> {
+        let Self { p2mr_utxo } = self;
+        p2mr_utxo.undo(rwtxn, dbs)?;
         Ok(())
     }
 }

@@ -228,6 +228,7 @@ fn connect_block_no_commit<'validator>(
         &validator.dbs,
         validator.network,
         validator.activation_height(),
+        validator.pqc_verify_budget_ms(),
     );
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
@@ -325,7 +326,12 @@ impl CusfEnforcer for Validator {
         };
         tracing::debug!(block_hash = %tip, "Syncing to tip");
 
-        let handler = BlockHandler::new(&self.dbs, self.network, self.activation_height());
+        let handler = BlockHandler::new(
+            &self.dbs,
+            self.network,
+            self.activation_height(),
+            self.pqc_verify_budget_ms(),
+        );
         let sync_future = handler
             .sync_to_tip(
                 &self.mainchain_client,
@@ -369,7 +375,12 @@ impl CusfEnforcer for Validator {
         block_hash: BlockHash,
     ) -> Result<DisconnectBlockAction, Self::DisconnectBlockError> {
         let mut rwtxn = self.dbs.write_txn()?;
-        let handler = BlockHandler::new(&self.dbs, self.network, self.activation_height());
+        let handler = BlockHandler::new(
+            &self.dbs,
+            self.network,
+            self.activation_height(),
+            self.pqc_verify_budget_ms(),
+        );
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
         Ok(DisconnectBlockAction::default())
@@ -389,7 +400,12 @@ impl CusfEnforcer for Validator {
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
         // the transaction will not be accepted into the mempool.
-        let handler = BlockHandler::new(&self.dbs, self.network, self.activation_height());
+        let handler = BlockHandler::new(
+            &self.dbs,
+            self.network,
+            self.activation_height(),
+            self.pqc_verify_budget_ms(),
+        );
         let res = if handler.validate_tx(&mut rwtxn, tx, tx_inputs)? {
             TxAcceptAction::Accept {
                 conflicts_with: HashSet::new(),

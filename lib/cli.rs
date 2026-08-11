@@ -469,6 +469,10 @@ pub struct Config {
     /// Block height at which this enforcer's rules activate (regtest default: 0).
     #[arg(long = "activation-height", default_value_t = 0)]
     pub activation_height: u32,
+    /// Per-block wall-clock budget (milliseconds) for post-quantum signature
+    /// verification during block validation.
+    #[arg(long = "pqc-verify-budget-ms", default_value_t = crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS)]
+    pub pqc_verify_budget_ms: u64,
 }
 
 /// Written in place of a sensitive value.

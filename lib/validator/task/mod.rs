@@ -32,11 +32,12 @@ pub mod error;
 pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) dbs: &'a Dbs,
     pub(super) network: Network,
-    /// Height at which this enforcer's rules activate. Blocks below it are
-    /// plain Bitcoin history. Plumbed for fork rule sets; the template's
-    /// empty rule set has nothing to gate.
-    #[expect(dead_code, reason = "template: no rules consume the gate yet")]
+    /// Height at which BIP 360 (P2MR) validation activates. Blocks below it
+    /// are plain Bitcoin history: still recorded (and their P2MR outputs still
+    /// indexed), but spends are not validated.
     pub(super) activation_height: u32,
+    /// Per-block wall-clock budget for PQC signature verification.
+    pub(super) pqc_verify_budget_ms: u64,
 }
 
 impl<'a> BlockHandler<'a> {
@@ -44,11 +45,13 @@ impl<'a> BlockHandler<'a> {
         dbs: &'a Dbs,
         network: Network,
         activation_height: u32,
+        pqc_verify_budget_ms: u64,
     ) -> Self {
         Self {
             dbs,
             network,
             activation_height,
+            pqc_verify_budget_ms,
         }
     }
 }
@@ -63,20 +66,28 @@ impl BlockHandler<'_> {
     where
         TxRef: std::borrow::Borrow<Transaction>,
     {
-        // Fork point: validate `transaction` against your soft fork's mempool
-        // rules here (prevouts are available via `parent_txs`), returning
-        // Ok(false) to keep it out of the enforcer's mempool. The template
-        // accepts everything.
-        let _ = parent_txs;
+        use crate::validator::pqc::{self, activation::Bip360Activation};
+
         let dbs = self.dbs;
         let child_rwtxn = dbs.nested_write_txn(parent_rwtxn)?;
         let tip_hash = dbs
             .current_chain_tip
             .try_get(&child_rwtxn, &())?
             .ok_or(error::ValidateTransactionInner::NoChainTip)?;
-        let _tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
-        let _ = transaction;
-        Ok(true)
+        let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
+
+        // BIP 360 mempool admission: reject any invalid P2MR spend so it never
+        // enters the enforcer's template-building mempool. Parent txs supply
+        // the prevouts (a mempool tx's inputs are always available).
+        match pqc::validate_mempool_transaction(
+            transaction,
+            tip_height,
+            Bip360Activation(self.activation_height),
+            parent_txs,
+        ) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
     }
 
     fn connect_block_pass_through(
@@ -88,15 +99,29 @@ impl BlockHandler<'_> {
         block_hash: BlockHash,
         prev_mainchain_block_hash: BlockHash,
     ) -> Result<Event, error::ConnectBlock> {
+        use crate::validator::pqc::{self, activation::Bip360Activation};
+
         let dbs = self.dbs;
-        // Fork point: validate `block` against your soft fork's consensus
-        // rules here. Return a non-fatal `error::ConnectBlock` variant to
-        // reject the block — the driver then tells Bitcoin Core to
-        // `invalidateblock` it. The template accepts everything.
+        // BIP 360 block validation: verify every P2MR spend and compute the
+        // resulting P2MR UTXO-set diff. Prevouts come from the indexed P2MR
+        // UTXO set plus this block's own outputs. A validation failure is a
+        // non-fatal rejection — the driver invalidateblocks it via Core RPC.
+        // Below activation the diff is still computed (outputs are indexed)
+        // but spends are not verified.
+        let chain_utxos = dbs.p2mr_utxos.load_map(rwtxn)?;
+        let p2mr_utxo = pqc::validate_and_diff_block_transactions(
+            block,
+            height,
+            Bip360Activation(self.activation_height),
+            &chain_utxos,
+            self.pqc_verify_budget_ms,
+        )
+        .map_err(|source| error::ConnectBlock::Bip360 { block_hash, source })?;
+
         let block_info = BlockInfo {
             coinbase_txid: coinbase.compute_txid(),
         };
-        let block_diff = diff::Block::default();
+        let block_diff = diff::Block { p2mr_utxo };
         let () = block_diff.apply(rwtxn, dbs, height)?;
         let () = dbs
             .block_hashes
@@ -129,11 +154,9 @@ impl BlockHandler<'_> {
         })
     }
 
-    /// Block header should be stored before calling this.
-    ///
-    /// Rule ballots are composed with
-    /// [`crate::validator::rules::RuleEngine::decide`] (same fail-closed AND
-    /// as mempool [`Self::validate_tx`]).
+    /// Block header should be stored before calling this. Runs BIP 360
+    /// validation via [`Self::connect_block_pass_through`]; an invalid P2MR
+    /// spend produces a non-fatal rejection.
     #[tracing::instrument(skip_all)]
     pub(in crate::validator) fn connect_block(
         &self,
@@ -780,7 +803,12 @@ mod connect_disconnect_tests {
     use crate::validator::test_utils::create_test_dbs;
 
     fn test_handler(dbs: &crate::validator::dbs::Dbs) -> BlockHandler<'_> {
-        BlockHandler::new(dbs, bitcoin::Network::Regtest, 0)
+        BlockHandler::new(
+            dbs,
+            bitcoin::Network::Regtest,
+            0,
+            crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+        )
     }
 
     fn coinbase_tx() -> Transaction {

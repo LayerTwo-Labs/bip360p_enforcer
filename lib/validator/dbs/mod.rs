@@ -7,6 +7,7 @@ use thiserror::Error;
 mod block_hashes;
 pub(in crate::validator) mod diff;
 
+mod p2mr_utxos;
 pub use self::block_hashes::{BlockHashDbs, error as block_hash_dbs_error};
 
 /// On-disk schema version of the validator databases.
@@ -99,6 +100,9 @@ pub(super) struct Dbs {
     pub block_hashes: BlockHashDbs,
     /// Tip that the enforcer is synced to
     pub current_chain_tip: DatabaseUnique<UnitKey, SerdeBincode<bitcoin::BlockHash>>,
+    /// Unspent P2MR outputs, providing prevouts for validating P2MR spends
+    /// (which reference outputs the block-only `connect_block` does not carry).
+    pub p2mr_utxos: p2mr_utxos::P2mrUtxoDbs,
 }
 
 impl Dbs {
@@ -126,6 +130,7 @@ impl Dbs {
         let mut rwtxn = env.write_txn()?;
         let block_hashes = BlockHashDbs::new(&env, &mut rwtxn)?;
         let current_chain_tip = DatabaseUnique::create(&env, &mut rwtxn, "current_chain_tip")?;
+        let p2mr_utxos = p2mr_utxos::P2mrUtxoDbs::new(&env, &mut rwtxn)?;
         let () = rwtxn.commit()?;
 
         tracing::info!("Created validator DBs in {}", db_dir.display());
@@ -133,6 +138,7 @@ impl Dbs {
             env,
             block_hashes,
             current_chain_tip,
+            p2mr_utxos,
         })
     }
 

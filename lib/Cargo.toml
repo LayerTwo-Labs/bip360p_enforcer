@@ -63,6 +63,8 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 transitive = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+bitcoin-p2mr-pqc = { workspace = true }
+bitcoinpqc = { workspace = true }
 
 [features]
 default = ["rustls"]
@@ -81,4 +83,3 @@ workspace = true
 name = "cusf_enforcer_lib"
 path = "lib.rs"
 doctest = false
-

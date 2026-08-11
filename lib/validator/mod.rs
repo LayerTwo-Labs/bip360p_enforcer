@@ -1,10 +1,11 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use async_broadcast::{InactiveReceiver, Sender as BroadcastSender, broadcast};
-use bitcoin::{self, BlockHash};
+use bitcoin::{self, BlockHash, OutPoint, TxOut};
 use bitcoin_jsonrpsee::jsonrpsee;
 use fallible_iterator::FallibleIterator;
 use futures::{StreamExt, stream::FusedStream};
@@ -24,6 +25,7 @@ pub mod cusf_enforcer;
 mod dbs;
 pub mod main_rest_client;
 pub mod parse_block_files;
+pub mod pqc;
 mod sync_state_summary;
 mod task;
 #[cfg(test)]
@@ -231,6 +233,23 @@ impl ToStatus for TryGetMainchainTipHeightError {
 }
 
 #[derive(Debug, Diagnostic, Error)]
+pub enum GetP2mrUtxosError {
+    #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error(transparent)]
+    ReadTxn(#[from] env::error::ReadTxn),
+}
+
+impl ToStatus for GetP2mrUtxosError {
+    fn builder(&self) -> StatusBuilder<'_> {
+        match self {
+            Self::Db(err) => StatusBuilder::new(err),
+            Self::ReadTxn(err) => StatusBuilder::new(err),
+        }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
 pub enum EventsStreamError {
     #[error("Events stream closed due to overflow")]
     Overflow,
@@ -256,9 +275,14 @@ pub struct Validator {
     network: bitcoin::Network,
     network_params: NetworkParams,
     activation_height: u32,
+    pqc_verify_budget_ms: u64,
 }
 
 impl Validator {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "wiring up node clients, data dir, network params, and the                   BIP 360 activation height + PQC verify budget"
+    )]
     pub fn new(
         mainchain_client: jsonrpsee::http_client::HttpClient,
         mainchain_rest_client: MainRestClient,
@@ -267,6 +291,7 @@ impl Validator {
         network: bitcoin::Network,
         network_params: NetworkParams,
         activation_height: u32,
+        pqc_verify_budget_ms: u64,
     ) -> Result<Self, InitError> {
         // Note: this needs to be reasonably big. If set too small,
         // we're going to run into strange issues with the broadcast
@@ -292,11 +317,16 @@ impl Validator {
             network,
             network_params,
             activation_height,
+            pqc_verify_budget_ms,
         })
     }
 
     pub fn activation_height(&self) -> u32 {
         self.activation_height
+    }
+
+    pub fn pqc_verify_budget_ms(&self) -> u64 {
+        self.pqc_verify_budget_ms
     }
 
     pub fn network(&self) -> bitcoin::Network {
@@ -460,5 +490,19 @@ impl Validator {
         };
         let height = self.dbs.block_hashes.height().get(&rotxn, &tip)?;
         Ok(Some(height))
+    }
+
+    /// The confirmed-chain P2MR (BIP 360) UTXO set, tracked automatically as
+    /// blocks connect. This is the wallet's source of spendable P2MR outputs.
+    pub fn p2mr_utxos(&self) -> Result<HashMap<OutPoint, TxOut>, GetP2mrUtxosError> {
+        let rotxn = self.dbs.read_txn()?;
+        let map = self.dbs.p2mr_utxos.load_map(&rotxn)?;
+        Ok(map)
+    }
+
+    /// Look up a single P2MR UTXO by outpoint. Returns `None` if it is not a
+    /// tracked, unspent P2MR output.
+    pub fn get_p2mr_utxo(&self, outpoint: &OutPoint) -> Result<Option<TxOut>, GetP2mrUtxosError> {
+        Ok(self.p2mr_utxos()?.remove(outpoint))
     }
 }

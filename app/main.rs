@@ -647,7 +647,10 @@ async fn run_validator_mempool_task(
     cancel: CancellationToken,
 ) -> Result<(), miette::Report> {
     tracing::info!("mempool sync task w/validator: starting");
-    let (_, err_rx) = sync_mempool(
+    // Bind the mempool sync handle for the task's lifetime. Dropping it
+    // immediately would tear the sync task down (upstream bip300301_enforcer
+    // 3d3b3d1).
+    let (_mempool_sync, err_rx) = sync_mempool(
         validator,
         mainchain_client,
         &zmq_addr_sequence,
@@ -1242,6 +1245,7 @@ async fn main() -> Result<()> {
         info.chain,
         network_params,
         cli.activation_height,
+        cli.pqc_verify_budget_ms,
     )
     .into_diagnostic()?;
 
