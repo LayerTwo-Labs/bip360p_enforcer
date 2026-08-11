@@ -46,6 +46,7 @@ use crate::{
 mod cusf_block_producer;
 pub mod error;
 pub mod mnemonic;
+pub mod p2mr_store;
 mod seed_store;
 mod sync;
 mod thread_safe_connection;
@@ -56,6 +57,34 @@ type BdkWallet = bdk_wallet::PersistedWallet<Persistence>;
 
 type ElectrumClient = BdkElectrumClient<bdk_electrum::electrum_client::Client>;
 type EsploraClient = bdk_esplora::esplora_client::AsyncClient;
+
+/// A confirmed P2MR UTXO known to the enforcer, with whether the wallet can
+/// spend it. Returned by [`Wallet::list_p2mr_outputs`].
+#[derive(Clone, Debug)]
+pub struct P2mrOutput {
+    pub outpoint: bitcoin::OutPoint,
+    pub txout: bitcoin::TxOut,
+    pub is_mine: bool,
+}
+
+/// Default absolute fee for a P2MR spend when the caller does not specify one.
+/// These spends are mined into the enforcer's own block template rather than
+/// relayed, so the fee is not economically required — it just needs to be small
+/// so partial spends return almost all of the remainder as change.
+pub const DEFAULT_P2MR_FEE_SATS: u64 = 1000;
+
+/// Result of [`Wallet::spend_p2mr`]: the spend txid plus, when the spend did not
+/// drain the whole output, the freshly minted P2MR change address and its value.
+#[derive(Clone, Debug)]
+pub struct P2mrSpendOutcome {
+    pub txid: bitcoin::Txid,
+    /// The change address (a new P2MR address of the input's scheme), if a
+    /// change output was created; `None` when the spend was a full drain or the
+    /// change was sub-dust and folded into the fee.
+    pub change_address: Option<String>,
+    /// The change amount in sats (0 when there is no change output).
+    pub change_sats: u64,
+}
 
 #[non_exhaustive]
 enum ChainSourceClient {
@@ -97,6 +126,7 @@ struct WalletInner {
     /// `bdk_db`
     bdk_db: tokio::sync::Mutex<Persistence>,
     seed_store: SeedStore,
+    p2mr_store: p2mr_store::P2mrStore,
     chain_source_client: Option<ChainSourceClient>,
     last_sync: async_lock::RwLock<Option<SystemTime>>,
 }
@@ -297,6 +327,7 @@ impl WalletInner {
         //
         // We can just go ahead and unlock the wallet right away.
         let seed_store = SeedStore::new(data_dir)?;
+        let p2mr_store = p2mr_store::P2mrStore::new(data_dir);
 
         let bitcoin_wallet = match seed_store.read_mnemonic().await? {
             Some(Either::Left(mnemonic)) => {
@@ -324,6 +355,7 @@ impl WalletInner {
             bitcoin_wallet: async_lock::RwLock::new(bitcoin_wallet),
             bdk_db: tokio::sync::Mutex::new(wallet_database),
             seed_store,
+            p2mr_store,
             chain_source_client,
             last_sync: async_lock::RwLock::new(None),
         })
@@ -1065,6 +1097,137 @@ impl Wallet {
             })
             .await?;
         Ok(address)
+    }
+
+    // ─── BIP 360 (P2MR) wallet lifecycle ───────────────────────────────────
+
+    /// Create a new P2MR address for `scheme`, persisting its key material.
+    /// Returns the record (scriptPubKey + the bech32m address via
+    /// [`p2mr_store::P2mrAddressRecord::address`]).
+    pub async fn create_p2mr_address(
+        &self,
+        scheme: p2mr_store::P2mrScheme,
+    ) -> Result<p2mr_store::P2mrAddressRecord, error::P2mrStore> {
+        self.inner.p2mr_store.create(scheme).await
+    }
+
+    /// The confirmed P2MR UTXOs known to the enforcer, each flagged with whether
+    /// this wallet holds the key to spend it.
+    pub fn list_p2mr_outputs(&self) -> Result<Vec<P2mrOutput>, error::ListP2mrOutputs> {
+        let utxos = self.inner.validator().p2mr_utxos()?;
+        let mut out = Vec::with_capacity(utxos.len());
+        for (outpoint, txout) in utxos {
+            let is_mine = self
+                .inner
+                .p2mr_store
+                .get_by_spk(txout.script_pubkey.as_script())?
+                .is_some();
+            out.push(P2mrOutput {
+                outpoint,
+                txout,
+                is_mine,
+            });
+        }
+        out.sort_by_key(|o| (o.outpoint.txid, o.outpoint.vout));
+        Ok(out)
+    }
+
+    /// Spend a confirmed P2MR UTXO the wallet controls, paying `amount` to
+    /// `destination`. Because stock Core will not relay the nonstandard spend,
+    /// it is queued in the block producer and mined via the enforcer's own
+    /// `getblocktemplate` + `submitblock`.
+    ///
+    /// `fee_sats` is the absolute fee; if `None`, [`DEFAULT_P2MR_FEE_SATS`] is
+    /// used. The remainder (`prevout_value − amount − fee`) is returned as
+    /// **change to a freshly minted P2MR address of the same scheme** — not
+    /// burned as fee. Sub-dust change folds back into the fee. The funding UTXO
+    /// must be confirmed (present in the enforcer's P2MR UTXO set).
+    pub async fn spend_p2mr(
+        &self,
+        outpoint: bitcoin::OutPoint,
+        destination: bitcoin::Address,
+        amount: Amount,
+        fee_sats: Option<Amount>,
+    ) -> Result<P2mrSpendOutcome, error::SpendP2mr> {
+        use bdk_wallet::IsDust as _;
+
+        let prevout = self
+            .inner
+            .validator()
+            .get_p2mr_utxo(&outpoint)?
+            .ok_or(error::SpendP2mr::UnknownUtxo { outpoint })?;
+
+        let record = self
+            .inner
+            .p2mr_store
+            .get_by_spk(prevout.script_pubkey.as_script())?
+            .ok_or_else(|| error::SpendP2mr::NotOurs {
+                outpoint,
+                script_pubkey: prevout.script_pubkey.clone(),
+            })?;
+
+        let prevout_value = prevout.value;
+        let dest_spk = destination.script_pubkey();
+        if amount.is_dust(&dest_spk) {
+            return Err(error::SpendP2mr::AmountBelowDust {
+                amount,
+                script_pubkey: dest_spk,
+            });
+        }
+        let fee = fee_sats.unwrap_or(Amount::from_sat(DEFAULT_P2MR_FEE_SATS));
+        let total = amount
+            .checked_add(fee)
+            .filter(|total| *total <= prevout_value)
+            .ok_or(error::SpendP2mr::FeeExceedsRemainder {
+                amount,
+                fee,
+                prevout_value,
+            })?;
+        let change = prevout_value - total;
+
+        let mut outputs = vec![bitcoin::TxOut {
+            value: amount,
+            script_pubkey: dest_spk,
+        }];
+        let mut change_address = None;
+        let mut change_sats = 0;
+        let mut actual_fee = fee;
+
+        // A P2MR change output has the same scriptPubKey shape as the prevout we
+        // are spending, so gauge the dust threshold against it without minting.
+        if change > Amount::ZERO {
+            if change.is_dust(&prevout.script_pubkey) {
+                // Sub-dust change is not worth an output; fold it into the fee.
+                actual_fee = prevout_value - amount;
+            } else {
+                let change_record = self.inner.p2mr_store.create(record.scheme).await?;
+                let addr = change_record.address(self.inner.validator().network())?;
+                outputs.push(bitcoin::TxOut {
+                    value: change,
+                    script_pubkey: change_record.script_pubkey(),
+                });
+                change_address = Some(addr.to_string());
+                change_sats = change.to_sat();
+            }
+        }
+
+        let tx = record.build_spend(
+            outpoint,
+            prevout,
+            outputs,
+            bitcoin::sighash::TapSighashType::Default,
+        )?;
+
+        let txid = self.inner.producer.enqueue_p2mr_spend(tx, actual_fee);
+        tracing::info!(
+            %txid, %outpoint, %actual_fee, %change_sats,
+            "queued P2MR spend for block-template injection"
+        );
+        Ok(P2mrSpendOutcome {
+            txid,
+            change_address,
+            change_sats,
+        })
     }
 
     /// Connect missing blocks to the BDK chain. Retries if we get a 'nested'

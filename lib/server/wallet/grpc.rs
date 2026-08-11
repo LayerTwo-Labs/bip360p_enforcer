@@ -8,22 +8,50 @@ use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, Service
 use crate::{
     proto::{
         ToStatus,
-        common::ReverseHex,
+        common::{ConsensusHex, ReverseHex},
         mainchain::{
-            CreateNewAddressRequest, CreateNewAddressResponse, CreateWalletRequest,
-            CreateWalletResponse, GetBalanceRequest, GetBalanceResponse, GetInfoRequest,
-            GetInfoResponse, ListTransactionsRequest, ListTransactionsResponse,
-            ListUnspentOutputsRequest, ListUnspentOutputsResponse, SendTransactionRequest,
-            SendTransactionResponse, UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
-            get_info_response, list_unspent_outputs_response,
+            CreateNewAddressRequest, CreateNewAddressResponse, CreateP2mrAddressRequest,
+            CreateP2mrAddressResponse, CreateWalletRequest, CreateWalletResponse,
+            GetBalanceRequest, GetBalanceResponse, GetInfoRequest, GetInfoResponse,
+            ListP2mrOutputsRequest, ListP2mrOutputsResponse, ListTransactionsRequest,
+            ListTransactionsResponse, ListUnspentOutputsRequest, ListUnspentOutputsResponse,
+            P2mrScheme, SendTransactionRequest, SendTransactionResponse, SpendP2mrRequest,
+            SpendP2mrResponse, UnlockWalletRequest, UnlockWalletResponse, WalletTransaction,
+            get_info_response, list_p2mr_outputs_response, list_unspent_outputs_response,
             send_transaction_request::RequiredUtxo,
         },
         mainchain_service::WalletService,
         wrap_timestamp,
     },
     server::missing_field,
-    wallet::{CreateTransactionParams, error::WalletInitialization},
+    wallet::{CreateTransactionParams, error::WalletInitialization, p2mr_store},
 };
+
+/// Map the proto scheme enum to the wallet store scheme.
+fn map_scheme<M: buffa::MessageName>(
+    scheme: buffa::EnumValue<P2mrScheme>,
+) -> Result<p2mr_store::P2mrScheme, ConnectError> {
+    match scheme.as_known() {
+        Some(P2mrScheme::P2MR_SCHEME_SCHNORR) => Ok(p2mr_store::P2mrScheme::Schnorr),
+        Some(P2mrScheme::P2MR_SCHEME_MLDSA) => Ok(p2mr_store::P2mrScheme::Mldsa),
+        Some(P2mrScheme::P2MR_SCHEME_SLH) => Ok(p2mr_store::P2mrScheme::Slh),
+        Some(P2mrScheme::P2MR_SCHEME_HYBRID_EC_SLH) => Ok(p2mr_store::P2mrScheme::HybridEcSlh),
+        _ => Err(crate::server::invalid_field_value::<M, _>(
+            "scheme",
+            "unspecified",
+            std::io::Error::other("P2MR scheme must be specified"),
+        )),
+    }
+}
+
+fn store_scheme_to_proto(scheme: p2mr_store::P2mrScheme) -> P2mrScheme {
+    match scheme {
+        p2mr_store::P2mrScheme::Schnorr => P2mrScheme::P2MR_SCHEME_SCHNORR,
+        p2mr_store::P2mrScheme::Mldsa => P2mrScheme::P2MR_SCHEME_MLDSA,
+        p2mr_store::P2mrScheme::Slh => P2mrScheme::P2MR_SCHEME_SLH,
+        p2mr_store::P2mrScheme::HybridEcSlh => P2mrScheme::P2MR_SCHEME_HYBRID_EC_SLH,
+    }
+}
 
 #[expect(refining_impl_trait_reachable)]
 impl WalletService for crate::wallet::Wallet {
@@ -325,5 +353,90 @@ impl WalletService for crate::wallet::Wallet {
             .map_err(|err| err.builder().to_connect_error())?;
 
         Ok(Response::new(CreateWalletResponse::default()))
+    }
+
+    async fn create_p2mr_address(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, CreateP2mrAddressRequest>,
+    ) -> ServiceResult<CreateP2mrAddressResponse> {
+        let CreateP2mrAddressRequest { scheme, .. } = request.to_owned_message();
+        let store_scheme = map_scheme::<CreateP2mrAddressRequest>(scheme)?;
+        let record = self
+            .create_p2mr_address(store_scheme)
+            .await
+            .map_err(|err| err.builder().to_connect_error())?;
+        let address = record
+            .address(self.validator().network())
+            .map_err(|err| err.builder().to_connect_error())?;
+        Ok(Response::new(CreateP2mrAddressResponse {
+            address: address.to_string(),
+            script_pubkey: MessageField::some(ConsensusHex::encode(
+                &record.script_pubkey().into_bytes(),
+            )),
+            scheme: store_scheme_to_proto(store_scheme).into(),
+        }))
+    }
+
+    async fn list_p2mr_outputs(
+        &self,
+        _ctx: RequestContext,
+        _request: ServiceRequest<'_, ListP2mrOutputsRequest>,
+    ) -> ServiceResult<ListP2mrOutputsResponse> {
+        let outputs = self
+            .list_p2mr_outputs()
+            .map_err(|err| err.builder().to_connect_error())?
+            .into_iter()
+            .map(|o| list_p2mr_outputs_response::Output {
+                txid: MessageField::some(ReverseHex::encode(&o.outpoint.txid)),
+                vout: o.outpoint.vout,
+                value_sats: o.txout.value.to_sat(),
+                script_pubkey: MessageField::some(ConsensusHex::encode(
+                    &o.txout.script_pubkey.into_bytes(),
+                )),
+                is_mine: o.is_mine,
+            })
+            .collect();
+        Ok(Response::new(ListP2mrOutputsResponse { outputs }))
+    }
+
+    async fn spend_p2mr(
+        &self,
+        _ctx: RequestContext,
+        request: ServiceRequest<'_, SpendP2mrRequest>,
+    ) -> ServiceResult<SpendP2mrResponse> {
+        use crate::proto::mainchain::SpendP2mrRequest;
+        let SpendP2mrRequest {
+            txid,
+            vout,
+            destination,
+            amount_sats,
+            fee_sats,
+            ..
+        } = request.to_owned_message();
+        let txid = txid
+            .into_option()
+            .ok_or_else(|| missing_field::<SpendP2mrRequest>("txid"))?
+            .decode_status::<SpendP2mrRequest, _>("txid")?;
+        let outpoint = bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::Hash::from_byte_array(txid)),
+            vout,
+        };
+        let destination = Address::from_str(&destination)
+            .map_err(|err| ConnectError::invalid_argument(format!("invalid destination: {err:#}")))?
+            .require_network(self.validator().network())
+            .map_err(|err| {
+                ConnectError::invalid_argument(format!("destination on wrong network: {err:#}"))
+            })?;
+        let fee = fee_sats.into_option().map(|v| Amount::from_sat(v.value));
+        let outcome = self
+            .spend_p2mr(outpoint, destination, Amount::from_sat(amount_sats), fee)
+            .await
+            .map_err(|err| err.builder().to_connect_error())?;
+        Ok(Response::new(SpendP2mrResponse {
+            txid: MessageField::some(ReverseHex::encode(&outcome.txid)),
+            change_address: outcome.change_address.unwrap_or_default(),
+            change_sats: outcome.change_sats,
+        }))
     }
 }

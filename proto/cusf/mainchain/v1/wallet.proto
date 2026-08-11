@@ -43,6 +43,75 @@ service WalletService {
   rpc UnlockWallet(UnlockWalletRequest) returns (UnlockWalletResponse) {
     option idempotency_level = IDEMPOTENT;
   }
+
+  // BIP 360 (P2MR / post-quantum) address lifecycle.
+
+  // Create a new P2MR address for one of the supported spend schemes. The key
+  // material is stored by the enforcer; funds paid to the returned address can
+  // later be spent via `SpendP2mr`.
+  rpc CreateP2mrAddress(CreateP2mrAddressRequest) returns (CreateP2mrAddressResponse);
+  // List the confirmed P2MR outputs the enforcer knows about, each flagged with
+  // whether this wallet holds the key to spend it.
+  rpc ListP2mrOutputs(ListP2mrOutputsRequest) returns (ListP2mrOutputsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Spend a confirmed P2MR output this wallet controls. The nonstandard spend
+  // is injected into the enforcer's own block template and mined via
+  // submitblock (stock Core will not relay it).
+  rpc SpendP2mr(SpendP2mrRequest) returns (SpendP2mrResponse);
+}
+
+// The four P2MR spend schemes: three single-signature leaves (Schnorr,
+// ML-DSA-44, SLH-DSA) plus the hybrid EC+SLH leaf that requires both.
+enum P2mrScheme {
+  P2MR_SCHEME_UNSPECIFIED = 0;
+  P2MR_SCHEME_SCHNORR = 1;
+  P2MR_SCHEME_MLDSA = 2;
+  P2MR_SCHEME_SLH = 3;
+  P2MR_SCHEME_HYBRID_EC_SLH = 4;
+}
+
+message CreateP2mrAddressRequest {
+  P2mrScheme scheme = 1;
+}
+message CreateP2mrAddressResponse {
+  string address = 1;
+  cusf.common.v1.ConsensusHex script_pubkey = 2;
+  P2mrScheme scheme = 3;
+}
+
+message ListP2mrOutputsRequest {}
+message ListP2mrOutputsResponse {
+  message Output {
+    cusf.common.v1.ReverseHex txid = 1;
+    uint32 vout = 2;
+    uint64 value_sats = 3;
+    cusf.common.v1.ConsensusHex script_pubkey = 4;
+    // Set when this wallet holds the key to spend the output.
+    bool is_mine = 5;
+  }
+  repeated Output outputs = 1;
+}
+
+message SpendP2mrRequest {
+  cusf.common.v1.ReverseHex txid = 1;
+  uint32 vout = 2;
+  // Destination address for the spend.
+  string destination = 3;
+  uint64 amount_sats = 4;
+  // Absolute fee in sats. If unset, a small default fee is used. The remainder
+  // (`prevout_value - amount_sats - fee`) is returned as change to a freshly
+  // minted P2MR address of the same scheme, not burned as fee. Sub-dust change
+  // folds back into the fee.
+  google.protobuf.UInt64Value fee_sats = 5;
+}
+message SpendP2mrResponse {
+  cusf.common.v1.ReverseHex txid = 1;
+  // The P2MR change address the remainder was sent to, if a change output was
+  // created. Empty on a full drain or when sub-dust change folded into the fee.
+  string change_address = 2;
+  // The change amount in sats (0 when there is no change output).
+  uint64 change_sats = 3;
 }
 
 message CreateNewAddressRequest {}

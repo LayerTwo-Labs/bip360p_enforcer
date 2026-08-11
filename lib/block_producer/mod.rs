@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bitcoin::{BlockHash, Transaction, Txid};
+use bitcoin::{Amount, BlockHash, Transaction, Txid};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
         CoinbaseTxn, CusfBlockProducer, FilledBlockTemplate, InitialBlockTemplate,
+        initial_block_template::SuffixTxsItem,
         typewit::const_marker::{Bool, BoolWit},
     },
     cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
@@ -11,6 +12,10 @@ use cusf_enforcer_mempool::{
 use tracing::instrument;
 
 use crate::{errors::ErrorChain, validator::Validator};
+
+/// Fully-signed P2MR spends awaiting block-template injection, keyed by txid;
+/// the value carries the absolute fee.
+type PendingP2mrSpends = ordermap::OrderMap<Txid, (Transaction, Amount)>;
 
 pub mod error;
 mod mine;
@@ -30,6 +35,12 @@ struct Inner {
     last_gbt_error: parking_lot::RwLock<Option<String>>,
     /// Limits `GenerateToAddress` to one concurrent call at a time.
     generate_blocks_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Fully-signed P2MR spends awaiting inclusion in a block. Stock Core's
+    /// mempool won't relay these (nonstandard witness v2), so they never reach
+    /// the enforcer's shadow mempool; instead they are injected into the block
+    /// template we build here (`finalize_block_template`) and mined via
+    /// `submitblock`. Keyed by txid; the value carries the absolute fee.
+    pending_p2mr_spends: parking_lot::Mutex<PendingP2mrSpends>,
 }
 
 #[derive(Clone)]
@@ -54,8 +65,41 @@ impl BlockProducer {
                 signet_challenge,
                 last_gbt_error: parking_lot::RwLock::new(None),
                 generate_blocks_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+                pending_p2mr_spends: parking_lot::Mutex::new(PendingP2mrSpends::new()),
             }),
         })
+    }
+
+    /// Queue a fully-signed P2MR spend for inclusion in the next block template.
+    /// `fee` is the absolute fee (prevout value − sum of output values). The
+    /// spend is injected via `finalize_block_template` and mined by
+    /// `submitblock`; it is removed from the queue once seen in a connected
+    /// block. Returns the spend txid.
+    pub fn enqueue_p2mr_spend(&self, tx: Transaction, fee: Amount) -> Txid {
+        let txid = tx.compute_txid();
+        self.inner
+            .pending_p2mr_spends
+            .lock()
+            .insert(txid, (tx, fee));
+        txid
+    }
+
+    /// Drop any pending P2MR spends that appear in `block` (they've been mined).
+    ///
+    /// Called from every accepted-block path. In wallet mode the mempool sync
+    /// drives [`Wallet::connect_block`](crate::wallet::Wallet), which connects
+    /// the validator directly rather than through
+    /// [`CusfEnforcer::connect_block`] here, so that path must reap explicitly —
+    /// otherwise a mined spend lingers in the queue and is re-injected into the
+    /// next template, colliding with its already-confirmed self (BIP30).
+    pub(crate) fn reap_confirmed_p2mr_spends(&self, block: &bitcoin::Block) {
+        let mut pending = self.inner.pending_p2mr_spends.lock();
+        if pending.is_empty() {
+            return;
+        }
+        for tx in &block.txdata {
+            pending.swap_remove(&tx.compute_txid());
+        }
     }
 
     pub fn validator(&self) -> &Validator {
@@ -135,6 +179,9 @@ impl CusfEnforcer for BlockProducer {
         block: &bitcoin::Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
         let res = self.connect_block_validator(block).await?;
+        if matches!(res, ConnectBlockAction::Accept { .. }) {
+            self.reap_confirmed_p2mr_spends(block);
+        }
         Ok(res)
     }
 
@@ -173,8 +220,9 @@ impl CusfBlockProducer for BlockProducer {
     /// 2. it fetches the initial block template (this function),
     /// 3. it processes that further and returns it to the client.
     ///
-    /// This is the hook for adding rule-set coinbase outputs to the
-    /// about-to-be-generated block.
+    /// Reserves block weight for each pending P2MR spend so the mempool
+    /// selection leaves room; the actual txs are appended in
+    /// [`Self::finalize_block_template`].
     async fn initial_block_template<const COINBASE_TXN: bool>(
         &self,
         parent_block_hash: &BlockHash,
@@ -184,7 +232,14 @@ impl CusfBlockProducer for BlockProducer {
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
-        let _ = (parent_block_hash, coinbase_txn_wit, template);
+        let _ = (parent_block_hash, coinbase_txn_wit);
+        let weights: Vec<bitcoin::Weight> = {
+            let pending = self.inner.pending_p2mr_spends.lock();
+            pending.values().map(|(tx, _fee)| tx.weight()).collect()
+        };
+        for weight in weights {
+            template.suffix_txs.push(SuffixTxsItem::Reserved { weight });
+        }
         let res = Ok(());
         self.record_gbt_result(&res);
         res
@@ -192,6 +247,9 @@ impl CusfBlockProducer for BlockProducer {
 
     type FinalizeBlockTemplateError = error::FinalizeBlockTemplate;
 
+    /// Appends each pending P2MR spend to the template's suffix txs, filling the
+    /// weight reserved in [`Self::initial_block_template`]. These are mined via
+    /// `submitblock` even though stock Core never relayed them.
     async fn finalize_block_template<const COINBASE_TXN: bool>(
         &self,
         parent_block_hash: &BlockHash,
@@ -201,7 +259,15 @@ impl CusfBlockProducer for BlockProducer {
     where
         Bool<COINBASE_TXN>: CoinbaseTxn,
     {
-        let _ = (parent_block_hash, coinbase_txn_wit, template);
+        let _ = (parent_block_hash, coinbase_txn_wit);
+        let spends: Vec<(Transaction, Amount)> = {
+            let pending = self.inner.pending_p2mr_spends.lock();
+            pending.values().cloned().collect()
+        };
+        let suffix = template.suffix_txs();
+        for (tx, fee) in spends {
+            suffix.push((tx, fee));
+        }
         let res = Ok(());
         self.record_gbt_result(&res);
         res

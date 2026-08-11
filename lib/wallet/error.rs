@@ -861,3 +861,75 @@ impl ToStatus for GetNewAddress {
         }
     }
 }
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum P2mrStore {
+    #[error("failed to read P2MR key store")]
+    Read { source: std::io::Error },
+    #[error("failed to write P2MR key store")]
+    Write { source: std::io::Error },
+    #[error("failed to deserialize P2MR key store")]
+    Deserialize { source: serde_json::Error },
+    #[error("failed to serialize P2MR key store")]
+    Serialize { source: serde_json::Error },
+    #[error("failed to generate P2MR key entropy")]
+    Entropy { source: rand::rngs::SysError },
+    #[error("failed to build P2MR output: {0}")]
+    BuildOutput(String),
+    #[error("failed to render P2MR address")]
+    Address {
+        source: bitcoin::address::FromScriptError,
+    },
+}
+
+impl ToStatus for P2mrStore {
+    fn builder(&self) -> StatusBuilder<'_> {
+        StatusBuilder::new(self)
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum ListP2mrOutputs {
+    #[error(transparent)]
+    GetP2mrUtxos(#[from] crate::validator::GetP2mrUtxosError),
+    #[error(transparent)]
+    Store(#[from] P2mrStore),
+}
+
+impl ToStatus for ListP2mrOutputs {
+    fn builder(&self) -> StatusBuilder<'_> {
+        StatusBuilder::new(self)
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+pub enum SpendP2mr {
+    #[error(transparent)]
+    GetP2mrUtxos(#[from] crate::validator::GetP2mrUtxosError),
+    #[error(transparent)]
+    Store(#[from] P2mrStore),
+    #[error("no known P2MR UTXO at outpoint `{outpoint}`")]
+    UnknownUtxo { outpoint: bitcoin::OutPoint },
+    #[error("P2MR UTXO at `{outpoint}` is not controlled by this wallet")]
+    NotOurs {
+        outpoint: bitcoin::OutPoint,
+        script_pubkey: bitcoin::ScriptBuf,
+    },
+    #[error("spend amount {amount} is below the dust limit for {script_pubkey}")]
+    AmountBelowDust {
+        amount: bitcoin::Amount,
+        script_pubkey: bitcoin::ScriptBuf,
+    },
+    #[error("amount {amount} + fee {fee} exceeds prevout value {prevout_value}")]
+    FeeExceedsRemainder {
+        amount: bitcoin::Amount,
+        fee: bitcoin::Amount,
+        prevout_value: bitcoin::Amount,
+    },
+}
+
+impl ToStatus for SpendP2mr {
+    fn builder(&self) -> StatusBuilder<'_> {
+        StatusBuilder::new(self)
+    }
+}

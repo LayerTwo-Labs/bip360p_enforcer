@@ -1,72 +1,241 @@
-# cusf_enforcer — a soft-fork enforcer template
+# cusf_enforcer — a BIP 360 (P2MR) soft-fork enforcer
 
-A **CUSF** ("Core Untouched Soft Fork") enforcer: a sidecar daemon that
-watches an unmodified Bitcoin Core node and enforces additional consensus
-rules out-of-band. When a block violates the rules, the enforcer tells the
-node to `invalidateblock` it; when a mempool transaction violates them, the
-enforcer keeps it out of its own template-building mempool and evicts it
-from the node's mempool. Miners point at the enforcer's
-`getblocktemplate` server and only ever build on rule-compliant blocks.
+A CUSF ("Core Untouched Soft Fork") enforcer: a sidecar daemon that watches an
+**unmodified** Bitcoin Core node and enforces **BIP 360** Pay-to-Merkle-Root
+(P2MR, SegWit v2) outputs and their post-quantum signature spends. P2MR outputs
+look anyone-can-spend to a stock node, so the enforcer adds the missing
+consensus rule out-of-band: it validates every P2MR spend and calls
+`invalidateblock` on any block containing an invalid one, and keeps invalid
+spends out of the block templates it serves to miners. No patched Bitcoin Core
+is required.
 
-**This repository is a template.** It ships the full enforcer machinery with
-an intentionally empty rule set — every block and transaction is accepted.
-Fork it, add your soft-fork's validation logic, and you have a deployable
-enforcer that composes with the rest of the CUSF stack.
+Four spend schemes are validated inside P2MR tapscript leaves:
 
-## What the template provides
+| Scheme | Signature | Notes |
+| --- | --- | --- |
+| secp256k1 Schnorr (BIP340) | 64 B | baseline, not post-quantum |
+| ML-DSA-44 (CRYSTALS-Dilithium, FIPS 204) | 2420 B | lattice |
+| SLH-DSA-SHA2-128s (SPHINCS+, FIPS 205) | 7856 B | hash-based |
+| hybrid EC + SLH (overload) | 64 + 7856 B | Schnorr and SLH-DSA in one leaf |
 
-- **Chain sync**: headers via Bitcoin Core's REST interface, blocks via
-  JSON-RPC (or direct `blk*.dat` reads), reorg handling with automatic
-  state rollback (`lib/validator/`).
-- **Enforcement plumbing** via the `CusfEnforcer` trait
-  (`cusf-enforcer-mempool`): `connect_block` → `invalidateblock` on reject;
-  `accept_tx` → mempool filtering; a `getblocktemplate` server for miners.
-- **State scaffolding**: LMDB block/header store with a reversible per-block
-  diff (`lib/validator/dbs/diff.rs`) — track your rule's state there and
-  reorgs undo it automatically. A deterministic consensus-state digest
-  (`--verify-consensus-state`) for cross-run consistency checks.
-- **Wallet** (BDK; encrypted seed storage) and **mining** support
-  (`GenerateToAddress` for regtest, template server for real miners).
-- **gRPC API** (connect-rpc): chain queries, block/header info, event
-  subscriptions, wallet operations (`proto/cusf/`).
-- **Integration test harness** driving real `bitcoind` + enforcer processes
-  (`integration_tests/`; `just it-all`).
+Validation lives in `lib/validator/pqc/`, and the wallet's spend construction in
+`lib/validator/pqc/signer.rs`. See
+[docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md) for the activation height, the
+signature-length "overload" model, and the module layout.
 
-## Where to add your soft fork
+# Requirements
 
-1. Implement validation over transactions and blocks (your own module tree
-   under `lib/validator/`).
-2. Wire it into `BlockHandler::{validate_tx, connect_block}`
-   (`lib/validator/task/mod.rs`) — the fork points are marked with
-   comments. Rejecting a block means returning a non-fatal
-   `error::ConnectBlock` variant; the driver then has Bitcoin Core
-   `invalidateblock` it.
-3. Track block-derived state in `dbs::diff::Block` so reorgs roll it back.
-4. Add integration trials to `integration_tests/` and wire them into
-   `just it-all`.
-5. Rename the crates/binary (`cusf_enforcer` → `your_enforcer`) if desired.
+1. Bitcoin Core (v29+), with the ZMQ `pubsequence` notifier and the REST
+   interface (`-rest`) enabled; `-txindex` is required when running with a
+   wallet.
 
-To run **several soft forks against one node**, run each fork's enforcer as
-its own validator-only process — each independently invalidates blocks that
-violate its rules — and point miners at exactly one enforcer's
-`getblocktemplate` server.
+1. Rustc & Cargo, version 1.88.0 or higher. Installing via Rustup is
+   recommended.
 
-## Build and test
+## Supported Bitcoin Core versions
+
+The enforcer supports running against the 3 latest major versions of Bitcoin
+Core. `getnetworkinfo` is queried at startup and refuses to run against an
+unsupported Bitcoin Core version. The supported set lives in
+[`lib/version.rs`](./lib/version.rs); see `--help` for the override flags.
+
+# Getting started
+
+Building/running:
 
 ```bash
-just build          # debug build
-just test           # fmt + clippy + unit tests (needs cargo-nextest + nightly rustfmt)
-just verify         # pre-submit subset without nextest
-just setup-core     # download stock Bitcoin Core; write integrationtests.env
-just it-all         # integration trials against real bitcoind
+# Compiles the project
+$ cargo build
+
+# See available options
+$ cargo run -- --help
+
+# Starts the Connect RPC server at localhost:50001
+# Adjust these parameters to match your local Bitcoin
+# Core instance
+$ cargo run -- \
+  --node-rpc-addr=localhost:38332 \
+  --node-rpc-user=user \
+  --node-rpc-pass=password \
+  --node-zmq-addr-sequence=tcp://0.0.0.0:29000
+
+# You should now be able to fetch data from the server!
+$ curl -H 'application/json' \
+        http://localhost:50051/cusf.validator.v1.ValidatorService/GetChainInfo
+{
+  "network": "NETWORK_SIGNET"
+}
 ```
 
-Requires a stock Bitcoin Core (v29+) with `-rest` enabled, ZMQ
-`pubsequence`, and `-txindex` when running with a wallet.
+# Interacting with the enforcer
 
-## Lineage
+The CUSF enforcer exposes multiple [Connect](https://connectrpc.com/) (gRPC)
+services. These can be interacted with using either plain `curl` or a
+Connect/gRPC client of your choice, for example
+[`buf curl`](https://buf.build/docs/installation/) or
+[`grpcurl`](https://github.com/fullstorydev/grpcurl).
 
-Derived from [`bip300301_enforcer`](https://github.com/LayerTwo-Labs/bip300301_enforcer)
-(the BIP300/301 drivechain enforcer) by removing the drivechain rule set and
-generalizing the rule plumbing. The BIP360+ enforcer is built from this
-template in the same repository history.
+Some examples of interacting with the enforcer using `curl`, assuming you expose
+the server at the default address `localhost:50051`:
+
+```bash
+# Define an alias for ease of use
+$ alias enforcer_curl='curl -X POST -H "Content-Type: application/json"'
+
+# List all the available RPCs
+$ buf_curl --list-methods http://localhost:50051
+cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
+cusf.mainchain.v1.ValidatorService/GetChainInfo
+cusf.mainchain.v1.ValidatorService/GetChainTip
+cusf.mainchain.v1.ValidatorService/GetSidechains
+cusf.mainchain.v1.WalletService/CreateNewAddress
+cusf.mainchain.v1.WalletService/CreateSidechainProposal
+... list continues
+
+# Fetching data with a RPC that takes no input data
+$ enforcer_curl http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetChainInfo
+{
+  "network": "NETWORK_SIGNET"
+}
+
+# Fetching data with a RPC that takes input data
+$ request='{"block_hash": {"hex": "000002a78fc54150bb2d4cdb0fb19bcf744f2877faf90a172972fca5daf5fe92"}}'
+$ enforcer_curl -d "$request" http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
+{
+  "headerInfo": {
+    "blockHash": {
+      "hex": "000002a78fc54150bb2d4cdb0fb19bcf744f2877faf90a172972fca5daf5fe92"
+    },
+    "prevBlockHash": {
+      "hex": "000002501d569e62a56ea175896d4348dd9cfef1d700e5b06250486df07c9225"
+    },
+    "height": 34998,
+    "work": {
+      "hex": "14d4490000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
+```
+
+# Regtest
+
+By default, the enforcer runs against our custom signet. If you instead want to
+run against a local regtest, you need to also run a local regtest Electrum
+server. There are multiple implementations of Electrum servers, an easy-to-use
+one is [`mempool/electrs`](https://github.com/mempool/electrs).
+
+For complete instructions on how to do this, consult the
+[official docs](https://github.com/mempool/electrs).
+
+A quickstart (that might not work, in case you're missing some dependencies):
+
+```bash
+$ git clone https://github.com/mempool/electrs
+
+$ cd electrs
+
+$ cargo run --bin electrs --release -- \
+    --network regtest \
+    --cookie=user:password \
+    --jsonrpc-import
+```
+
+# Logging
+
+The application uses the `tracing` crate for logging. Logging is configured
+through setting the `--log-level` argument. Some examples:
+
+```bash
+# Prints ALL debug logs
+$ cargo run ... --log-level DEBUG
+```
+
+Logs can also be configured via env vars, which take precedence over CLI args.
+
+```bash
+# Prints logs at the "info" level and above, plus our logs the "debug" level and above
+$ RUST_LOG=info,cusf_enforcer_lib=debug cargo run ...
+```
+
+# Working with the proto files
+
+The proto definitions live in the upstream
+[`LayerTwo-Labs/cusf_sidechain_proto`](https://github.com/LayerTwo-Labs/cusf_sidechain_proto)
+repo. We pin a specific commit in [`buf.gen.yaml`](./buf.gen.yaml) and check the
+generated Rust code into [`lib/proto/generated/`](./lib/proto/generated/).
+Generation is performed by the remote
+[`buf.build/anthropics/buffa`](https://buf.build/anthropics/buffa) (message
+types) and
+[`buf.build/anthropics/connect-rust`](https://buf.build/anthropics/connect-rust)
+(Connect RPC service stubs) plugins.
+
+To regenerate (after bumping the `ref:` in `buf.gen.yaml`):
+
+```bash
+$ just generate
+```
+
+# Code formatting
+
+Rust code is formatted with [rustfmt](https://github.com/rust-lang/rustfmt). You
+need to ensure you have a nightly version of Rust installed on your system. To
+format the project files from the command line:
+
+```bash
+$ just fmt          # preferred: nightly rustfmt + prettier (npx/bunx) + buf if present
+$ just fmt-check    # nightly rustfmt --check (no stable “unstable option” spam)
+```
+
+`rustfmt.toml` uses nightly-only options (`group_imports`,
+`imports_granularity`). Always use **`cargo +nightly fmt`** (as `just fmt` /
+`just fmt-check` do), not stable `cargo fmt`, if you want a clean check.
+
+Markdown/YAML: `just fmt` runs Prettier via `bunx` or `npx` when available.
+`buf format` is optional (skipped with a note if `buf` is not on `PATH`).
+
+# Linting Rust code
+
+Rust code is linted with Clippy.
+
+```bash
+$ just clippy                                        # format check + workspace clippy
+# or directly:
+$ cargo clippy --workspace --all-targets -- -D warnings
+```
+
+# Unit tests
+
+```bash
+$ just test-unit                                     # all workspace unit tests
+$ just test-pqc                                      # P2MR / PQC validation tests only
+```
+
+# Integration tests
+
+Integration tests can be run using
+
+```bash
+$ just setup-core            # download stock Bitcoin Core, write integrationtests.env
+$ just it-all                # run the full trial suite against stock bitcoind
+$ just it <trial_name>       # run one trial
+```
+
+Requires `integrationtests.env` (see `just setup-core` / `just setup` /
+`just setup-p2mr`).
+
+# Profiling
+
+```bash
+# Generate a flamegraph for Rust code. This does NOT
+# measure syscalls/IO wait
+# https://github.com/flamegraph-rs/flamegraph
+$ cargo install flamegraph
+$ cargo flamegraph --  --data-dir ./datadir \
+          --node-rpc-addr=localhost:38332 \
+          --node-rpc-user=user \
+          --node-rpc-pass=password \
+          --enable-mempool --exit-after-sync 100000
+
+# macOS only
+$ just trace-macos
+```

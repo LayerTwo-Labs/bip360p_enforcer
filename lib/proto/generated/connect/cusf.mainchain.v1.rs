@@ -2029,6 +2029,42 @@ pub type OwnedUnlockWalletResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<CreateP2mrAddressRequestView<'static>>`.
+pub type OwnedCreateP2mrAddressRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<CreateP2mrAddressResponseView<'static>>`.
+pub type OwnedCreateP2mrAddressResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListP2mrOutputsRequestView<'static>>`.
+pub type OwnedListP2mrOutputsRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ListP2mrOutputsResponseView<'static>>`.
+pub type OwnedListP2mrOutputsResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<SpendP2mrRequestView<'static>>`.
+pub type OwnedSpendP2mrRequestView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<SpendP2mrResponseView<'static>>`.
+pub type OwnedSpendP2mrResponseView = ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrResponseView<
+        'static,
+    >,
+>;
 impl ::connectrpc::Encodable<
     crate::proto::generated::buffa::cusf::mainchain::v1::CreateNewAddressResponse,
 >
@@ -2253,6 +2289,90 @@ for ::buffa::view::OwnedView<
         ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
     }
 }
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrResponse,
+>
+for crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+}
 /// Full service name for this service.
 pub const WALLET_SERVICE_SERVICE_NAME: &str = "cusf.mainchain.v1.WalletService";
 /// Static [`Spec`](::connectrpc::Spec) for the server-side `CreateNewAddress` RPC.
@@ -2327,6 +2447,33 @@ pub const WALLET_SERVICE_UNLOCK_WALLET_SPEC: ::connectrpc::Spec = ::connectrpc::
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::Idempotent);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `CreateP2mrAddress` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_CREATE_P2MR_ADDRESS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/CreateP2mrAddress",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `ListP2mrOutputs` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_LIST_P2MR_OUTPUTS_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/ListP2mrOutputs",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::NoSideEffects);
+/// Static [`Spec`](::connectrpc::Spec) for the server-side `SpendP2mr` RPC.
+///
+/// The dispatcher surfaces this on
+/// [`RequestContext::spec`](::connectrpc::RequestContext::spec).
+pub const WALLET_SERVICE_SPEND_P2MR_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/cusf.mainchain.v1.WalletService/SpendP2mr",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
 /// Server trait for WalletService.
 ///
 /// # Implementing handlers
@@ -2558,6 +2705,80 @@ pub trait WalletService: Send + Sync + 'static {
         Output = ::connectrpc::ServiceResult<
             impl ::connectrpc::Encodable<
                 crate::proto::generated::buffa::cusf::mainchain::v1::UnlockWalletResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Create a new P2MR address for one of the supported spend schemes. The key
+    /// material is stored by the enforcer; funds paid to the returned address can
+    /// later be spent via `SpendP2mr`.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn create_p2mr_address<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// List the confirmed P2MR outputs the enforcer knows about, each flagged with
+    /// whether this wallet holds the key to spend it.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn list_p2mr_outputs<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Spend a confirmed P2MR output this wallet controls. The nonstandard spend
+    /// is injected into the enforcer's own block template and mined via
+    /// submitblock (stock Core will not relay it).
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn spend_p2mr<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrResponse,
             > + Send + use<'a, Self>,
         >,
     > + Send;
@@ -2822,6 +3043,93 @@ impl<S: WalletService> WalletServiceExt for S {
                 },
             )
             .with_spec(WALLET_SERVICE_UNLOCK_WALLET_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "CreateP2mrAddress",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.create_p2mr_address(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_CREATE_P2MR_ADDRESS_SPEC)
+            .route_view_idempotent(
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListP2mrOutputs",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.list_p2mr_outputs(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_LIST_P2MR_OUTPUTS_SPEC)
+            .route_view(
+                WALLET_SERVICE_SERVICE_NAME,
+                "SpendP2mr",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.spend_p2mr(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(WALLET_SERVICE_SPEND_P2MR_SPEC)
     }
 }
 /// Monomorphic dispatcher for `WalletService`.
@@ -2913,6 +3221,24 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
                         .with_spec(WALLET_SERVICE_UNLOCK_WALLET_SPEC),
+                )
+            }
+            "CreateP2mrAddress" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_CREATE_P2MR_ADDRESS_SPEC),
+                )
+            }
+            "ListP2mrOutputs" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(true)
+                        .with_spec(WALLET_SERVICE_LIST_P2MR_OUTPUTS_SPEC),
+                )
+            }
+            "SpendP2mr" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(WALLET_SERVICE_SPEND_P2MR_SPEC),
                 )
             }
             _ => None,
@@ -3095,6 +3421,69 @@ impl<T: WalletService> ::connectrpc::Dispatcher for WalletServiceServer<T> {
                         .await?
                         .encode::<
                             crate::proto::generated::buffa::cusf::mainchain::v1::UnlockWalletResponse,
+                        >(format)
+                })
+            }
+            "CreateP2mrAddress" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressRequest,
+                    >::from_parts(&req, &body);
+                    svc.create_p2mr_address(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressResponse,
+                        >(format)
+                })
+            }
+            "ListP2mrOutputs" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsRequest,
+                    >::from_parts(&req, &body);
+                    svc.list_p2mr_outputs(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsResponse,
+                        >(format)
+                })
+            }
+            "SpendP2mr" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrRequest,
+                    >::from_parts(&req, &body);
+                    svc.spend_p2mr(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrResponse,
                         >(format)
                 })
             }
@@ -3577,6 +3966,141 @@ where
                 &self.config,
                 WALLET_SERVICE_SERVICE_NAME,
                 "UnlockWallet",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the CreateP2mrAddress RPC. Sends a request to /cusf.mainchain.v1.WalletService/CreateP2mrAddress.
+    pub async fn create_p2mr_address(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.create_p2mr_address_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the CreateP2mrAddress RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn create_p2mr_address_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::CreateP2mrAddressRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::CreateP2mrAddressResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "CreateP2mrAddress",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the ListP2mrOutputs RPC. Sends a request to /cusf.mainchain.v1.WalletService/ListP2mrOutputs.
+    pub async fn list_p2mr_outputs(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.list_p2mr_outputs_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the ListP2mrOutputs RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn list_p2mr_outputs_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::ListP2mrOutputsRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::ListP2mrOutputsResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "ListP2mrOutputs",
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the SpendP2mr RPC. Sends a request to /cusf.mainchain.v1.WalletService/SpendP2mr.
+    pub async fn spend_p2mr(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.spend_p2mr_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the SpendP2mr RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn spend_p2mr_with_options(
+        &self,
+        request: crate::proto::generated::buffa::cusf::mainchain::v1::SpendP2mrRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::generated::buffa::cusf::mainchain::v1::__buffa::view::SpendP2mrResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                WALLET_SERVICE_SERVICE_NAME,
+                "SpendP2mr",
                 request,
                 options,
             )

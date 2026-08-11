@@ -287,6 +287,10 @@ impl CusfEnforcer for Wallet {
         // `invalidateblock` to bitcoind.
         match &res {
             ConnectBlockAction::Accept { remove_mempool_txs } => {
+                // Drop any queued P2MR spends this block mined. `connect_block`
+                // above only touches the validator, so `BlockProducer`'s own
+                // `connect_block` (which would reap) never runs on this path.
+                self.inner.producer.reap_confirmed_p2mr_spends(block);
                 let () = sync_wallet_to_tip(self, block.block_hash(), Some(block)).await?;
                 let mut wallet_write = self.inner.write_wallet().await?;
                 let now = SystemTime::now()
