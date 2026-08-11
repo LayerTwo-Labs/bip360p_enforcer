@@ -32,7 +32,7 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 temp-dir = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
