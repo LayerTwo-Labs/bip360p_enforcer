@@ -327,5 +327,94 @@ pub fn tests(
         crate::test_no_secrets_in_logs::test_no_secrets_in_logs,
     ));
 
+    // FINAL_REPORT claim: testmempoolaccept never inserts (control: sendraw does).
+    async_trials.push(new_trial_with_setup_opts(
+        "cusf_claim_testmempoolaccept_no_insert".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::setup::SetupOpts {
+            // Mature coinbases in bitcoind wallet; no electrs needed.
+            enforcer_wallet: crate::setup::EnforcerWallet::Disabled,
+            bitcoind_args: vec!["-fallbackfee=0.0002".to_string()],
+            ..Default::default()
+        },
+        crate::test_cusf_claims::test_cusf_claim_testmempoolaccept_no_insert,
+    ));
+
+    async_trials.extend([new_trial(
+        "file_based_block_parser".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::Mempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_file_based_block_parser::test_file_based_block_parser,
+    )]);
+    // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
+    // `SetupOpts` to start the enforcer without a wallet.
+    async_trials.push(new_trial(
+        "generate_to_address".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_generate_to_address::test_generate_to_address,
+    ));
+    // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
+    // `SetupOpts` to start the enforcer without a wallet.
+    async_trials.push(new_trial(
+        "wallet_less_block_template".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_wallet_less_block_template::test_wallet_less_block_template,
+    ));
+    // Full BIP 360 wallet lifecycle (create → receive → spend → mine →
+    // validate) for all four schemes against plain bitcoind. Needs the
+    // enforcer's own block-template server (to inject nonstandard P2MR spends)
+    // and an enabled enforcer wallet, so it runs in `GetBlockTemplate` mode with
+    // its own setup opts.
+    async_trials.push(new_trial_with_setup_opts(
+        "bip360_wallet_lifecycle".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::GetBlockTemplate,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_bip360_wallet_lifecycle::wallet_lifecycle_setup_opts(),
+        crate::test_bip360_wallet_lifecycle::test_bip360_wallet_lifecycle,
+    ));
+
+    // Enforcement: invalid P2MR spends must be rejected (invalidateblock). Runs
+    // validator-only (no wallet/mempool), so the trial fn builds its own setup
+    // opts and calls `setup` itself — hence `new_trial`, not `_with_setup`.
+    async_trials.push(new_trial(
+        "bip360_enforcement".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_bip360_enforcement::test_bip360_enforcement,
+    ));
+
     async_trials
 }

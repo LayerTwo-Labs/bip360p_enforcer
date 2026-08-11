@@ -180,10 +180,14 @@ fmt:
 test-unit:
     cargo test -p cusf_enforcer_lib
 
+# P2MR / PQC validation unit tests only.
+test-pqc:
+    cargo test -p cusf_enforcer_lib pqc::
+
 check-integration-build:
     cargo check --example integration_tests
 
-verify: fmt-check test-unit _clippy-check check-integration-build
+verify: fmt-check test-unit test-pqc _clippy-check check-integration-build
 
 setup-core:
     #!/usr/bin/env bash
@@ -251,6 +255,9 @@ it-all auto='':
     just build
     export TEMPLATE_SKIP_REBUILD=1
     trials=(
+        bip360_wallet_lifecycle
+        bip360_enforcement
+        cusf_claim_testmempoolaccept_no_insert
         "unconfirmed_transactions (mode: Mempool, network: Regtest)"
         file_based_block_parser
         generate_to_address
@@ -401,3 +408,30 @@ trace-macos:
         exit 1
     fi
     exec ./scripts/trace_enforcer_macos.sh
+
+
+
+
+
+
+
+
+
+# Claim pins: testmempoolaccept no-insert; stock rejects P2MR spend
+cusf-claims auto='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ENV_FILE="{{env_file}}"
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+    fi
+    cargo build -p cusf_enforcer
+    cargo build --example integration_tests
+    export CUSF_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export CUSF_ENFORCER="{{enforcer_bin}}"
+    export TEMPLATE_SKIP_REBUILD=1
+    just _run-it cusf_claim_testmempoolaccept_no_insert "{{auto}}"
+    just _run-it cusf_claim_stock_rejects_p2mr_spend "{{auto}}"

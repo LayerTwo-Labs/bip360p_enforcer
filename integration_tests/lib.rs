@@ -1,7 +1,11 @@
+pub mod bip360_enforce;
 pub mod block_verdict;
 pub mod integration_test;
 pub mod mine;
 pub mod setup;
+mod test_bip360_enforcement;
+mod test_bip360_wallet_lifecycle;
+mod test_cusf_claims;
 mod test_file_based_block_parser;
 mod test_generate_to_address;
 mod test_no_secrets_in_logs;
