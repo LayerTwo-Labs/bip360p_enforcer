@@ -27,6 +27,7 @@ pub mod main_rest_client;
 pub mod parse_block_files;
 pub mod pqc;
 mod sync_state_summary;
+pub mod tapscript;
 mod task;
 #[cfg(test)]
 mod test_utils;

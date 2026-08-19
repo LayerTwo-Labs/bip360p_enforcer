@@ -31,6 +31,12 @@ pub enum PqcValidationError {
     },
     #[error("BIP 360 validation failed: {0}")]
     Block(String),
+    #[error("BIP 360+ opcode validation failed for tx {txid}: {source}")]
+    Tapscript {
+        txid: bitcoin::Txid,
+        #[source]
+        source: crate::validator::tapscript::TapscriptError,
+    },
 }
 
 /// Validate BIP 360 rules for a single transaction.
@@ -56,6 +62,15 @@ pub fn validate_transaction(
     .map_err(|source| PqcValidationError::Transaction {
         txid: tx.compute_txid(),
         source,
+    })?;
+
+    // BIP360+ Tapscript opcodes (OP_CAT, …) in standard Taproot v1 leaves —
+    // decoupled from P2MR, same activation gate (already checked above).
+    crate::validator::tapscript::enforce_transaction(tx).map_err(|source| {
+        PqcValidationError::Tapscript {
+            txid: tx.compute_txid(),
+            source,
+        }
     })
 }
 

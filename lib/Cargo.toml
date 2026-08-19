@@ -83,3 +83,8 @@ workspace = true
 name = "cusf_enforcer_lib"
 path = "lib.rs"
 doctest = false
+
+# Dev helper for manually testing BIP360+ OP_CAT enforcement on regtest.
+[[example]]
+name = "opcat_dev"
+path = "examples/opcat_dev.rs"
