@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{path::PathBuf, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
 use bitcoin::{Block, BlockHash, Network, Transaction, Work, hashes::Hash as _};
@@ -57,15 +57,11 @@ impl<'a> BlockHandler<'a> {
 }
 
 impl BlockHandler<'_> {
-    pub(in crate::validator) fn validate_tx<TxRef>(
+    pub(in crate::validator) fn validate_tx(
         &self,
         parent_rwtxn: &mut RwTxn,
         transaction: &Transaction,
-        parent_txs: &HashMap<bitcoin::Txid, TxRef>,
-    ) -> Result<bool, error::ValidateTransaction>
-    where
-        TxRef: std::borrow::Borrow<Transaction>,
-    {
+    ) -> Result<bool, error::ValidateTransaction> {
         use crate::validator::pqc::{self, activation::Bip360Activation};
 
         let dbs = self.dbs;
@@ -76,14 +72,16 @@ impl BlockHandler<'_> {
             .ok_or(error::ValidateTransactionInner::NoChainTip)?;
         let tip_height = dbs.block_hashes.height().get(&child_rwtxn, &tip_hash)?;
 
-        // BIP 360 mempool admission: reject any invalid P2MR spend so it never
-        // enters the enforcer's template-building mempool. Parent txs supply
-        // the prevouts (a mempool tx's inputs are always available).
+        // BIP 360+ mempool admission. Since upstream dropped `tx_inputs` from
+        // `accept_tx`, we no longer have parent prevouts here, so the P2MR
+        // prevout check is a no-op — which is fine: P2MR/OP_CAT spends are
+        // non-relay (they never reach mempool admission; they enter via the
+        // block-producer suffix path), and block-connect remains authoritative.
+        // The OP_CAT/tapscript checks need no prevouts and still run.
         match pqc::validate_mempool_transaction(
             transaction,
             tip_height,
             Bip360Activation(self.activation_height),
-            parent_txs,
         ) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),

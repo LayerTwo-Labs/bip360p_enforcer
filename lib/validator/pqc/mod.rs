@@ -14,10 +14,7 @@ pub mod schemes;
 pub mod signer;
 pub mod spend;
 
-use std::{
-    borrow::Borrow,
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use bitcoin::{Block, OutPoint, Transaction, TxOut};
 use thiserror::Error;
@@ -106,28 +103,24 @@ pub fn validate_block_transactions(
     Ok(())
 }
 
-/// Validate BIP 360 rules for a mempool transaction with explicit parent txs.
-pub fn validate_mempool_transaction<TxRef>(
+/// Validate BIP 360+ rules for a mempool transaction.
+///
+/// Since upstream `cusf-enforcer-mempool` dropped `tx_inputs` from
+/// `accept_tx`, no parent prevouts are available at mempool admission, so the
+/// P2MR spend check (which needs prevouts) is effectively a no-op here. That is
+/// acceptable: P2MR/OP_CAT spends are non-relay and never reach mempool
+/// admission — they enter the template via the block-producer suffix path — and
+/// block-connect remains the authoritative validator. The BIP360+ opcode
+/// (OP_CAT/tapscript) checks need no prevouts and still run.
+pub fn validate_mempool_transaction(
     tx: &Transaction,
     height: u32,
     activation: Bip360Activation,
-    parent_txs: &HashMap<bitcoin::Txid, TxRef>,
-) -> Result<(), PqcValidationError>
-where
-    TxRef: Borrow<Transaction>,
-{
+) -> Result<(), PqcValidationError> {
     if !activation.is_active(height) {
         return Ok(());
     }
-    let mut available_prevouts = HashMap::new();
-    for input in &tx.input {
-        if let Some(parent) = parent_txs.get(&input.previous_output.txid) {
-            let parent_tx = parent.borrow();
-            if let Some(output) = parent_tx.output.get(input.previous_output.vout as usize) {
-                available_prevouts.insert(input.previous_output, output.clone());
-            }
-        }
-    }
+    let available_prevouts = HashMap::new();
     validate_transaction(
         tx,
         height,

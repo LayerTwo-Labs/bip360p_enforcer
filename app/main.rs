@@ -548,6 +548,8 @@ where
         &mut enforcer,
         rpc_client,
         zmq_addr_sequence,
+        // Optional node `mempool.dat` fast-sync path; we do a normal sync.
+        None,
         Box::pin(cancel.cancelled_owned()).fuse(),
     )
     .inspect_ok(|_| tracing::info!(%zmq_addr_sequence,  "Initial mempool sync complete"))

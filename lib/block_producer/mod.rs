@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use bitcoin::{Amount, BlockHash, Transaction, Txid};
 use cusf_enforcer_mempool::{
@@ -200,15 +200,8 @@ impl CusfEnforcer for BlockProducer {
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
 
-    fn accept_tx<TxRef>(
-        &mut self,
-        tx: &Transaction,
-        tx_inputs: &HashMap<Txid, TxRef>,
-    ) -> Result<TxAcceptAction, Self::AcceptTxError>
-    where
-        TxRef: std::borrow::Borrow<Transaction>,
-    {
-        self.inner.validator.clone().accept_tx(tx, tx_inputs)
+    fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
+        self.inner.validator.clone().accept_tx(tx)
     }
 }
 

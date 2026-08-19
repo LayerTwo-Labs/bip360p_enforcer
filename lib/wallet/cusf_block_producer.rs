@@ -1,11 +1,10 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
     future::Future,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use bitcoin::{BlockHash, Transaction, Txid};
+use bitcoin::{BlockHash, Transaction};
 use bitcoin_jsonrpsee::client::{GetBlockClient, U8Witness};
 use cusf_enforcer_mempool::{
     cusf_block_producer::{
@@ -327,15 +326,11 @@ impl CusfEnforcer for Wallet {
 
     type AcceptTxError = <Validator as CusfEnforcer>::AcceptTxError;
 
-    fn accept_tx<TxRef>(
+    fn accept_tx(
         &mut self,
         tx: &Transaction,
-        tx_inputs: &HashMap<Txid, TxRef>,
-    ) -> std::result::Result<TxAcceptAction, Self::AcceptTxError>
-    where
-        TxRef: std::borrow::Borrow<Transaction>,
-    {
-        let res = self.inner.validator().clone().accept_tx(tx, tx_inputs)?;
+    ) -> std::result::Result<TxAcceptAction, Self::AcceptTxError> {
+        let res = self.inner.validator().clone().accept_tx(tx)?;
         match res {
             TxAcceptAction::Accept { .. } => {
                 // TODO: Ideally we could push these updates to a channel, and

@@ -1,10 +1,6 @@
 //! Implementation of [`cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer`]
 
-use std::{
-    borrow::Borrow,
-    collections::{HashMap, HashSet},
-    future::Future,
-};
+use std::{collections::HashSet, future::Future};
 
 use async_broadcast::TrySendError;
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
@@ -388,14 +384,7 @@ impl CusfEnforcer for Validator {
 
     type AcceptTxError = AcceptTxError;
 
-    fn accept_tx<TxRef>(
-        &mut self,
-        tx: &Transaction,
-        tx_inputs: &HashMap<bitcoin::Txid, TxRef>,
-    ) -> Result<TxAcceptAction, Self::AcceptTxError>
-    where
-        TxRef: Borrow<Transaction>,
-    {
+    fn accept_tx(&mut self, tx: &Transaction) -> Result<TxAcceptAction, Self::AcceptTxError> {
         let mut rwtxn = self.dbs.write_txn()?;
         // A fatal error here isn't something that means we should
         // call out to the `invalidateblock` RPC. It simply means
@@ -406,7 +395,7 @@ impl CusfEnforcer for Validator {
             self.activation_height(),
             self.pqc_verify_budget_ms(),
         );
-        let res = if handler.validate_tx(&mut rwtxn, tx, tx_inputs)? {
+        let res = if handler.validate_tx(&mut rwtxn, tx)? {
             TxAcceptAction::Accept {
                 conflicts_with: HashSet::new(),
                 weight_tweak: 0,
