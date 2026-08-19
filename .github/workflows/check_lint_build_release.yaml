@@ -298,7 +298,7 @@ jobs:
 
       - name: Install just
         if: strategy.job-index == 0
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
 
       - name: Verify gRPC reflection (grpcurl + buf curl)
         if: strategy.job-index == 0
