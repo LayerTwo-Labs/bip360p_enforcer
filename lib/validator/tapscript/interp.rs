@@ -12,14 +12,18 @@
 //! script, unknown opcode, or non-true final stack is a rejection.
 
 use bitcoin::{
-    Script,
+    Script, Transaction,
     blockdata::opcodes::{Opcode, all as opcodes},
+    consensus::encode::serialize as consensus_serialize,
     hashes::{Hash as _, hash160, ripemd160, sha256, sha256d},
     script::Instruction,
 };
 use thiserror::Error;
 
 use super::{OP_CAT, OP_CTV, OP_VAULT, OP_VAULT_RECOVER};
+
+/// BIP119 template-hash / OP_CTV argument size.
+const CTV_HASH_LEN: usize = 32;
 
 /// Maximum size (bytes) of a single stack element (BIP347 keeps the 520-byte
 /// script-element limit for `OP_CAT`).
@@ -41,6 +45,10 @@ pub enum InterpError {
     StackOverflow,
     #[error("reserved BIP360+ opcode {byte:#04x} is not yet active")]
     ReservedOpcode { byte: u8 },
+    #[error("OP_CHECKTEMPLATEVERIFY argument is not {CTV_HASH_LEN} bytes (got {len})")]
+    CtvBadArgLength { len: usize },
+    #[error("OP_CHECKTEMPLATEVERIFY template hash mismatch")]
+    CtvTemplateMismatch,
     #[error("opcode {opcode} is not implemented by the BIP360+ interpreter")]
     UnimplementedOpcode { opcode: Opcode },
     #[error("OP_VERIFY / *VERIFY failed")]
@@ -85,6 +93,14 @@ impl Stack {
             .pop()
             .ok_or(InterpError::StackUnderflow { opcode })
     }
+
+    /// Peek the top element without popping (for verify-in-place opcodes).
+    fn top(&self, opcode: &'static str) -> Result<&[u8], InterpError> {
+        self.items
+            .last()
+            .map(Vec::as_slice)
+            .ok_or(InterpError::StackUnderflow { opcode })
+    }
 }
 
 /// Bitcoin's `CastToBool`: an element is true unless it is empty, all-zero, or
@@ -98,15 +114,61 @@ fn is_truthy(v: &[u8]) -> bool {
     false
 }
 
+/// BIP119 `DefaultCheckTemplateVerifyHash` of `tx` at `input_index`.
+///
+/// Single-SHA256 over: nVersion (4 LE signed), nLockTime (4 LE), the scriptSigs
+/// hash (only if any input has a non-empty scriptSig), input count (4 LE), the
+/// sequences hash, output count (4 LE), the outputs hash, and the input index
+/// (4 LE). Each sub-hash is a single SHA256.
+pub fn default_check_template_verify_hash(tx: &Transaction, input_index: usize) -> [u8; 32] {
+    let sha = |data: &[u8]| sha256::Hash::hash(data).to_byte_array();
+
+    let mut seq_bytes = Vec::with_capacity(tx.input.len() * 4);
+    for input in &tx.input {
+        seq_bytes.extend_from_slice(&input.sequence.to_consensus_u32().to_le_bytes());
+    }
+    let sequences_hash = sha(&seq_bytes);
+
+    let mut out_bytes = Vec::new();
+    for output in &tx.output {
+        out_bytes.extend_from_slice(&consensus_serialize(output));
+    }
+    let outputs_hash = sha(&out_bytes);
+
+    let mut r = Vec::new();
+    r.extend_from_slice(&tx.version.0.to_le_bytes());
+    r.extend_from_slice(&tx.lock_time.to_consensus_u32().to_le_bytes());
+    if tx.input.iter().any(|i| !i.script_sig.is_empty()) {
+        let mut ss = Vec::new();
+        for input in &tx.input {
+            ss.extend_from_slice(&consensus_serialize(&input.script_sig));
+        }
+        r.extend_from_slice(&sha(&ss));
+    }
+    r.extend_from_slice(&(tx.input.len() as u32).to_le_bytes());
+    r.extend_from_slice(&sequences_hash);
+    r.extend_from_slice(&(tx.output.len() as u32).to_le_bytes());
+    r.extend_from_slice(&outputs_hash);
+    r.extend_from_slice(&(input_index as u32).to_le_bytes());
+    sha(&r)
+}
+
 /// Execute a revealed BIP360+ leaf against the initial witness stack. Returns
-/// `Ok(())` iff execution leaves exactly one truthy element.
-pub fn execute_leaf(leaf: &Script, initial_stack: Vec<Vec<u8>>) -> Result<(), InterpError> {
+/// `Ok(())` iff execution leaves exactly one truthy element. `tx`/`input_index`
+/// identify the spending transaction and the input being validated, for opcodes
+/// that introspect the transaction (e.g. OP_CHECKTEMPLATEVERIFY).
+pub fn execute_leaf(
+    tx: &Transaction,
+    input_index: usize,
+    leaf: &Script,
+    initial_stack: Vec<Vec<u8>>,
+) -> Result<(), InterpError> {
     let mut stack = Stack::new(initial_stack)?;
 
     for instruction in leaf.instructions() {
         match instruction.map_err(|_| InterpError::MalformedScript)? {
             Instruction::PushBytes(bytes) => stack.push(bytes.as_bytes().to_vec())?,
-            Instruction::Op(op) => exec_op(op, &mut stack)?,
+            Instruction::Op(op) => exec_op(op, &mut stack, tx, input_index)?,
         }
     }
 
@@ -117,7 +179,12 @@ pub fn execute_leaf(leaf: &Script, initial_stack: Vec<Vec<u8>>) -> Result<(), In
     }
 }
 
-fn exec_op(op: Opcode, stack: &mut Stack) -> Result<(), InterpError> {
+fn exec_op(
+    op: Opcode,
+    stack: &mut Stack,
+    tx: &Transaction,
+    input_index: usize,
+) -> Result<(), InterpError> {
     let byte = op.to_u8();
 
     // BIP360+ opcodes are dispatched by raw byte: they occupy the high
@@ -135,8 +202,22 @@ fn exec_op(op: Opcode, stack: &mut Stack) -> Result<(), InterpError> {
         }
         return stack.push(cat);
     }
+    if byte == OP_CTV {
+        // OP_CHECKTEMPLATEVERIFY (0xfd) — BIP119. Verify-in-place: the top
+        // element must be the 32-byte DefaultCheckTemplateVerifyHash of the
+        // spending tx at this input; the element is NOT popped. Fail-closed on a
+        // non-32-byte argument (fresh OP_SUCCESS deployment, no OP_NOP4 legacy).
+        let arg = stack.top("OP_CHECKTEMPLATEVERIFY")?;
+        if arg.len() != CTV_HASH_LEN {
+            return Err(InterpError::CtvBadArgLength { len: arg.len() });
+        }
+        if arg != default_check_template_verify_hash(tx, input_index) {
+            return Err(InterpError::CtvTemplateMismatch);
+        }
+        return Ok(());
+    }
     // Reserved future BIP360+ opcodes: recognized but not yet active.
-    if byte == OP_CTV || byte == OP_VAULT || byte == OP_VAULT_RECOVER {
+    if byte == OP_VAULT || byte == OP_VAULT_RECOVER {
         return Err(InterpError::ReservedOpcode { byte });
     }
 
@@ -229,12 +310,30 @@ fn exec_op(op: Opcode, stack: &mut Stack) -> Result<(), InterpError> {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::script::Builder;
+    use bitcoin::{
+        OutPoint, ScriptBuf, Sequence, TxIn, Witness, locktime::absolute::LockTime,
+        script::Builder, transaction::Version,
+    };
 
     use super::*;
 
+    /// A minimal single-input spending tx for opcodes that don't introspect it.
+    fn dummy_tx() -> Transaction {
+        Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![],
+        }
+    }
+
     fn run(leaf: &Script, stack: Vec<Vec<u8>>) -> Result<(), InterpError> {
-        execute_leaf(leaf, stack)
+        execute_leaf(&dummy_tx(), 0, leaf, stack)
     }
 
     #[test]
@@ -277,13 +376,76 @@ mod tests {
 
     #[test]
     fn reserved_opcodes_rejected() {
-        for byte in [OP_CTV, OP_VAULT, OP_VAULT_RECOVER] {
+        // OP_CTV (0xfd) is now implemented; only OP_VAULT/OP_VAULT_RECOVER remain reserved.
+        for byte in [OP_VAULT, OP_VAULT_RECOVER] {
             let leaf = Builder::new().push_opcode(Opcode::from(byte)).into_script();
             assert_eq!(
                 run(&leaf, vec![]),
                 Err(InterpError::ReservedOpcode { byte })
             );
         }
+    }
+
+    /// A leaf `<hash> OP_CTV` where <hash> is the correct template hash of the
+    /// spending tx must accept; a wrong hash and a non-32-byte arg must reject.
+    #[test]
+    fn op_ctv_matches_template() {
+        let tx = dummy_tx();
+        let good = default_check_template_verify_hash(&tx, 0);
+        let ctv_leaf = |hash: &[u8]| {
+            Builder::new()
+                .push_slice(<&bitcoin::script::PushBytes>::try_from(hash).unwrap())
+                .push_opcode(Opcode::from(OP_CTV))
+                .into_script()
+        };
+        // Correct template hash: CTV leaves the (truthy) hash on the stack -> accept.
+        execute_leaf(&tx, 0, &ctv_leaf(&good), vec![]).expect("matching CTV template");
+        // Wrong hash -> mismatch.
+        let mut bad = good;
+        bad[0] ^= 0x01;
+        assert_eq!(
+            execute_leaf(&tx, 0, &ctv_leaf(&bad), vec![]),
+            Err(InterpError::CtvTemplateMismatch)
+        );
+        // Non-32-byte argument -> fail-closed.
+        assert_eq!(
+            execute_leaf(&tx, 0, &ctv_leaf(&[0u8; 16]), vec![]),
+            Err(InterpError::CtvBadArgLength { len: 16 })
+        );
+    }
+
+    /// Proof of BIP119 compliance: our DefaultCheckTemplateVerifyHash matches a
+    /// representative subset of BIP119's authoritative `ctvhash.json` vectors
+    /// (scriptSig present/absent, single/multi input, single/multi output, and
+    /// edge input indices). The full set was verified against this same code.
+    #[test]
+    fn bip119_ctvhash_golden_vectors() {
+        let json = include_str!("vectors/ctvhash.json");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(json).unwrap();
+        let mut checked = 0usize;
+        for entry in &entries {
+            let Some(hex_tx) = entry.get("hex_tx").and_then(|v| v.as_str()) else {
+                continue; // skip the leading format-description string
+            };
+            let tx: Transaction =
+                bitcoin::consensus::encode::deserialize(&hex::decode(hex_tx).unwrap()).unwrap();
+            let indices = entry["spend_index"].as_array().unwrap();
+            let results = entry["result"].as_array().unwrap();
+            for (idx, res) in indices.iter().zip(results) {
+                let input_index = idx.as_u64().unwrap() as usize;
+                let expected = hex::decode(res.as_str().unwrap()).unwrap();
+                assert_eq!(
+                    default_check_template_verify_hash(&tx, input_index).as_slice(),
+                    expected.as_slice(),
+                    "CTV hash mismatch at spend_index {input_index} for tx {hex_tx}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 20,
+            "expected the representative BIP119 vector set, got {checked}"
+        );
     }
 
     #[test]

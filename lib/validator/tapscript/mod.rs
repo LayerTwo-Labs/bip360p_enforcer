@@ -22,12 +22,15 @@ use bitcoin::{
     script::Instruction,
     taproot::{ControlBlock, LeafVersion},
 };
-pub use interp::InterpError;
+pub use interp::{InterpError, default_check_template_verify_hash};
 use thiserror::Error;
+
+/// OP_CHECKTEMPLATEVERIFY (0xfd) argument / template-hash size.
+pub const CTV_HASH_LEN: usize = 32;
 
 /// OP_CAT — BIP347 (byte `0xfe`, top of the OP_SUCCESSx range).
 pub const OP_CAT: u8 = 0xfe;
-/// OP_CHECKTEMPLATEVERIFY / CTV — BIP119 (byte `0xfd`). Reserved until Phase 5.
+/// OP_CHECKTEMPLATEVERIFY / CTV — BIP119 (byte `0xfd`).
 pub const OP_CTV: u8 = 0xfd;
 /// OP_VAULT — BIP345 (byte `0xfc`). Reserved until Phase 6.
 pub const OP_VAULT: u8 = 0xfc;
@@ -60,9 +63,11 @@ pub enum TapscriptError {
 pub fn enforce_transaction(tx: &Transaction) -> Result<(), TapscriptError> {
     for (input_index, input) in tx.input.iter().enumerate() {
         if let Some((leaf, stack)) = detect_enforced_leaf(&input.witness) {
-            interp::execute_leaf(leaf, stack).map_err(|source| TapscriptError::Interp {
-                input_index,
-                source,
+            interp::execute_leaf(tx, input_index, leaf, stack).map_err(|source| {
+                TapscriptError::Interp {
+                    input_index,
+                    source,
+                }
             })?;
         }
     }
