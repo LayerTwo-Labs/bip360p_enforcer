@@ -49,23 +49,23 @@ witness versions.
 
 Stock Core alone cannot demo mempool-path P2MR _spends_. Tier A pairs:
 
-| Peer                                                                                               | Role                                                                                             |
-| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Stock Core 31 + enforcer                                                                           | CUSF tip; funding mempool; spend path = block/`submitblock`                                      |
+| Peer                     | Role                                                        |
+| ------------------------ | ----------------------------------------------------------- |
+| Stock Core 31 + enforcer | CUSF tip; funding mempool; spend path = block/`submitblock` |
 
 On the dual stack the enforcer still **`invalidateblock`** on `connect_block`
-when BIP 360 rules fail—tip
-enforcement is independent of whether any peer’s mempool admitted the spend.
+when BIP 360 rules fail—tip enforcement is independent of whether any peer’s
+mempool admitted the spend.
 
 ## Tier B — mining path vs P2MR protocol match
 
 Do not conflate these with each other or with “CUSF broken”:
 
-| Path                                        | Command                           | Expect                                     |
-| ------------------------------------------- | --------------------------------- | ------------------------------------------ |
-| **TB-mine** CUSF mining (`submitblock`)     | `just bip360-tier-b-cusf`         | **PASS** (in `it-all`)                     |
-| **TB-factory** dual-process Miner factory   | `just bip360-tier-b-cusf-factory` | **PASS** (not in `it-all`; stock only)     |
-| **TB-sendraw** peer mempool shapes 1+2       | `just bip360-tier-b-mempool`      | **PASS**                                   |
+| Path                                      | Command                           | Expect                                 |
+| ----------------------------------------- | --------------------------------- | -------------------------------------- |
+| **TB-mine** CUSF mining (`submitblock`)   | `just bip360-tier-b-cusf`         | **PASS** (in `it-all`)                 |
+| **TB-factory** dual-process Miner factory | `just bip360-tier-b-cusf-factory` | **PASS** (not in `it-all`; stock only) |
+| **TB-sendraw** peer mempool shapes 1+2    | `just bip360-tier-b-mempool`      | **PASS**                               |
 
 **Stock policy vs TB-sendraw:** Alice’s stock Core rejecting v2 _spends_ is
 **mempool policy** (`AreInputsStandard` /

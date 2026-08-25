@@ -11,17 +11,17 @@ is required.
 
 Four spend schemes are validated inside P2MR tapscript leaves:
 
-| Scheme | Signature | Notes |
-| --- | --- | --- |
-| secp256k1 Schnorr (BIP340) | 64 B | baseline, not post-quantum |
-| ML-DSA-44 (CRYSTALS-Dilithium, FIPS 204) | 2420 B | lattice |
-| SLH-DSA-SHA2-128s (SPHINCS+, FIPS 205) | 7856 B | hash-based |
-| hybrid EC + SLH (overload) | 64 + 7856 B | Schnorr and SLH-DSA in one leaf |
+| Scheme                                   | Signature   | Notes                           |
+| ---------------------------------------- | ----------- | ------------------------------- |
+| secp256k1 Schnorr (BIP340)               | 64 B        | baseline, not post-quantum      |
+| ML-DSA-44 (CRYSTALS-Dilithium, FIPS 204) | 2420 B      | lattice                         |
+| SLH-DSA-SHA2-128s (SPHINCS+, FIPS 205)   | 7856 B      | hash-based                      |
+| hybrid EC + SLH (overload)               | 64 + 7856 B | Schnorr and SLH-DSA in one leaf |
 
 Validation lives in `lib/validator/pqc/`, and the wallet's spend construction in
-`lib/validator/pqc/signer.rs`. See
-[docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md) for the activation height, the
-signature-length "overload" model, and the module layout.
+`lib/validator/pqc/signer.rs`. See [docs/CUSF-BIP360.md](./docs/CUSF-BIP360.md)
+for the activation height, the signature-length "overload" model, and the module
+layout.
 
 # Requirements
 

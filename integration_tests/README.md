@@ -1,7 +1,7 @@
 # Integration tests
 
-Trials drive real processes — `bitcoind`, `electrs` (for wallet trials), and
-the enforcer binary — via a `libtest-mimic` harness.
+Trials drive real processes — `bitcoind`, `electrs` (for wallet trials), and the
+enforcer binary — via a `libtest-mimic` harness.
 
 ## Setup
 
@@ -15,8 +15,8 @@ or point the harness at binaries you already have:
 export CUSF_ENFORCER_INTEGRATION_TEST_ENV=$PWD/integration_tests/example.env
 ```
 
-Env vars (see `example.env`): `CUSF_ENFORCER`, `BITCOIND`,
-`BITCOIND_UNPATCHED`, `BITCOIN_CLI`, `BITCOIN_UTIL`, `ELECTRS`.
+Env vars (see `example.env`): `CUSF_ENFORCER`, `BITCOIND`, `BITCOIND_UNPATCHED`,
+`BITCOIN_CLI`, `BITCOIN_UTIL`, `ELECTRS`.
 
 ## Running
 

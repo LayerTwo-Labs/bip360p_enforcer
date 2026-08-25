@@ -93,8 +93,8 @@ OP_BOOLAND OP_VERIFY
 
 Witness (bottom → top): `[ec_sig, slh_sig, leaf_script, control_block]` —
 signatures are consumed in script execution order. Hybrid EC+SLH is the heaviest
-supported leaf: total signature WU = **7_920** (64 + 7856), comfortably under the
-per-input cap of **12_288 WU** (`MAX_PQC_SIG_WU_PER_INPUT` in `limits.rs`).
+supported leaf: total signature WU = **7_920** (64 + 7856), comfortably under
+the per-input cap of **12_288 WU** (`MAX_PQC_SIG_WU_PER_INPUT` in `limits.rs`).
 
 **Exclusion** (different algorithms in different leaves) is a wallet/miner
 concern; the enforcer validates whichever leaf is revealed.
@@ -166,20 +166,20 @@ lib/validator/dbs/
 
 ## Implementation status
 
-| Component                                                              | Status                                                              |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| P2MR output + merkle + control block validation                        | Done                                                                |
-| Leaf script walker + `OP_SUBSTR` rejection                             | Done                                                                |
-| `verify_overloaded_checksig` (Schnorr, ML-DSA-44, SLH-DSA-SHA2-128s)   | Done                                                                |
-| Hybrid EC+PQ (multi-site `OP_CHECKSIG` + `OP_BOOLAND OP_VERIFY`)       | Done                                                                |
-| `OP_CHECKSIGADD` / `OP_CHECKMULTISIG*`                                 | Done                                                                |
-| DoS limits (witness stack, sig WU, per-block PQC budget)               | Done                                                                |
-| Sighash matrix tests (non-`ALL` types, all schemes)                    | Done                                                                |
-| `connect_block` intra-block UTXO map                                   | Done                                                                |
-| Cross-block P2MR prevout lookup                                        | Done — `dbs/p2mr_utxos.rs` + incremental block validation           |
-| Mempool `accept_tx` with explicit parents                              | Done                                                                |
-| Unit tests (`cargo test -p cusf_enforcer_lib pqc::`)                   | Done — per-scheme sign/verify roundtrips + rejection matrix         |
-| Wallet lifecycle (create → receive → spend → mine → validate)          | Done — `SpendP2mr` + block-producer suffix injection                |
+| Component                                                              | Status                                                               |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| P2MR output + merkle + control block validation                        | Done                                                                 |
+| Leaf script walker + `OP_SUBSTR` rejection                             | Done                                                                 |
+| `verify_overloaded_checksig` (Schnorr, ML-DSA-44, SLH-DSA-SHA2-128s)   | Done                                                                 |
+| Hybrid EC+PQ (multi-site `OP_CHECKSIG` + `OP_BOOLAND OP_VERIFY`)       | Done                                                                 |
+| `OP_CHECKSIGADD` / `OP_CHECKMULTISIG*`                                 | Done                                                                 |
+| DoS limits (witness stack, sig WU, per-block PQC budget)               | Done                                                                 |
+| Sighash matrix tests (non-`ALL` types, all schemes)                    | Done                                                                 |
+| `connect_block` intra-block UTXO map                                   | Done                                                                 |
+| Cross-block P2MR prevout lookup                                        | Done — `dbs/p2mr_utxos.rs` + incremental block validation            |
+| Mempool `accept_tx` with explicit parents                              | Done                                                                 |
+| Unit tests (`cargo test -p cusf_enforcer_lib pqc::`)                   | Done — per-scheme sign/verify roundtrips + rejection matrix          |
+| Wallet lifecycle (create → receive → spend → mine → validate)          | Done — `SpendP2mr` + block-producer suffix injection                 |
 | Integration trial `bip360_wallet_lifecycle` (four schemes, plain Core) | Live **PASS** — create/fund/spend/mine/validate for all four schemes |
 
 ## Verification
@@ -193,8 +193,8 @@ CUSF_ENFORCER_INTEGRATION_TEST_ENV=$PWD/integration_tests/example.env \
 
 The `bip360_wallet_lifecycle` trial creates a P2MR address for each of the four
 schemes, funds it from the enforcer wallet, spends it via `SpendP2mr` (injected
-into the enforcer's own block template), mines the block on a plain Bitcoin
-Core node, and asserts the enforcer validates the spend and drops the output
-from the P2MR UTXO set. Negative paths (tampered signatures, wrong pubkey size,
-bad merkle path, forbidden opcodes, budget exhaustion) are covered by the
-`pqc::` unit-test rejection matrix.
+into the enforcer's own block template), mines the block on a plain Bitcoin Core
+node, and asserts the enforcer validates the spend and drops the output from the
+P2MR UTXO set. Negative paths (tampered signatures, wrong pubkey size, bad
+merkle path, forbidden opcodes, budget exhaustion) are covered by the `pqc::`
+unit-test rejection matrix.

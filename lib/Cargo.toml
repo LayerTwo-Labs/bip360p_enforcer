@@ -20,24 +20,20 @@ bitcoin-send-tx-p2p = { workspace = true }
 buffa = { workspace = true }
 buffa-descriptor = { workspace = true }
 buffa-types = { workspace = true }
-byteorder = { workspace = true }
 connectrpc = { workspace = true }
 http-body = { workspace = true }
 clap = { workspace = true, features = ["derive", "string", "std", "help", "usage", "error-context"] }
 cusf-enforcer-mempool = { workspace = true }
-derive_more = { workspace = true, features = ["debug", "display"] }
 either = { workspace = true }
 error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }
 futures = { workspace = true }
-hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
 heed-types = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 jiff = { workspace = true }
 jsonrpsee = { workspace = true, features = ["client"] }
 miette = { workspace = true, features = ["derive"] }
-nom = { workspace = true }
 nonempty = { workspace = true }
 ordermap = { workspace = true, features = ["serde"] }
 ouroboros = { workspace = true }

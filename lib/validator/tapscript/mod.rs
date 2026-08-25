@@ -22,8 +22,9 @@ use bitcoin::{
     script::Instruction,
     taproot::{ControlBlock, LeafVersion},
 };
-pub use interp::{InterpError, default_check_template_verify_hash};
 use thiserror::Error;
+
+pub use self::interp::{InterpError, default_check_template_verify_hash};
 
 /// OP_CHECKTEMPLATEVERIFY (0xfd) argument / template-hash size.
 pub const CTV_HASH_LEN: usize = 32;
