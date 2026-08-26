@@ -194,6 +194,7 @@ pub fn validate_and_diff_block_transactions(
     height: u32,
     activation: Bip360Activation,
     chain_p2mr_utxos: &HashMap<OutPoint, TxOut>,
+    extra_prevouts: &HashMap<OutPoint, TxOut>,
     pqc_verify_budget_ms: u64,
 ) -> Result<p2mr_utxo::P2mrUtxoBlockDiff, PqcValidationError> {
     if !activation.is_active(height) {
@@ -206,6 +207,15 @@ pub fn validate_and_diff_block_transactions(
     let mut created = HashMap::new();
     let mut spent_p2mr_in_block = HashSet::new();
     seed_coinbase_p2mr_diff(block, &mut available_prevouts, &mut created);
+    // Prevouts resolved out-of-band from bitcoind (e.g. a multi-input P2MR
+    // spend's non-P2MR co-input from a prior block, or a Taproot-v1 vault
+    // input). Fill-only: the local chain/same-block view is authoritative, so
+    // never override an entry it already provides.
+    for (outpoint, txout) in extra_prevouts {
+        available_prevouts
+            .entry(*outpoint)
+            .or_insert_with(|| txout.clone());
+    }
 
     for tx in block.txdata.iter().skip(1) {
         validate_transaction(
@@ -760,5 +770,121 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A multi-input P2MR spend whose non-P2MR co-input is a prior-block prevout
+    /// (not in the P2MR set) is `UnverifiableSpend` without out-of-band prevouts,
+    /// but once `extra_prevouts` supplies that co-input the committing sighash
+    /// can be built and the spend proceeds to real signature verification.
+    #[test]
+    fn extra_prevouts_resolves_p2mr_coinput_unverifiable_spend() {
+        use bitcoin::{OutPoint, ScriptBuf, Sequence, TxIn, Txid, Witness, hashes::Hash as _};
+
+        use crate::validator::test_utils::test_block_header;
+
+        // input 0 spends a P2MR output tracked in the chain set; input 1 is a
+        // non-P2MR co-input whose prevout only bitcoind can resolve.
+        let p2mr_prevout = TxOut {
+            value: Amount::from_sat(50_000),
+            script_pubkey: p2mr_output_script(),
+        };
+        let p2mr_outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        let coinput_prevout = TxOut {
+            value: Amount::from_sat(10_000),
+            script_pubkey: ScriptBuf::new(),
+        };
+        let coinput_outpoint = OutPoint {
+            txid: Txid::from_byte_array([0x22; 32]),
+            vout: 0,
+        };
+
+        // 65-byte signature ending in 0x01 => SIGHASH_ALL (committing, non-ACP),
+        // so the co-input prevout is required to build Prevouts::All.
+        let mut sig = vec![0u8; 64];
+        sig.push(0x01);
+        let mut witness = Witness::new();
+        witness.push(sig);
+        witness.push(vec![0xAB; 32]); // dummy leaf (fails merkle later)
+        witness.push(vec![0xC1]); // dummy control block
+
+        let spend = Transaction {
+            version: Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![
+                TxIn {
+                    previous_output: p2mr_outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::MAX,
+                    witness,
+                },
+                TxIn {
+                    previous_output: coinput_outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::new(),
+                },
+            ],
+            output: vec![],
+        };
+        let block = Block {
+            header: test_block_header(bitcoin::BlockHash::all_zeros()),
+            txdata: vec![
+                Transaction {
+                    version: Version::TWO,
+                    lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                    input: vec![],
+                    output: vec![],
+                },
+                spend,
+            ],
+        };
+        let chain_utxos = HashMap::from([(p2mr_outpoint, p2mr_prevout)]);
+
+        // Without the co-input prevout: fail closed as unverifiable.
+        let err = validate_and_diff_block_transactions(
+            &block,
+            0,
+            Bip360Activation(0),
+            &chain_utxos,
+            &HashMap::new(),
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PqcValidationError::Transaction {
+                    source: SpendError::UnverifiableSpend { input_index: 0 },
+                    ..
+                }
+            ),
+            "expected UnverifiableSpend without extra prevouts, got {err:?}"
+        );
+
+        // With the co-input supplied out-of-band: no longer unverifiable — the
+        // sighash is built and the (bogus) P2MR witness is actually checked.
+        let extra = HashMap::from([(coinput_outpoint, coinput_prevout)]);
+        let err = validate_and_diff_block_transactions(
+            &block,
+            0,
+            Bip360Activation(0),
+            &chain_utxos,
+            &extra,
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            !matches!(
+                err,
+                PqcValidationError::Transaction {
+                    source: SpendError::UnverifiableSpend { .. },
+                    ..
+                }
+            ),
+            "co-input prevout should make the spend verifiable, got {err:?}"
+        );
     }
 }

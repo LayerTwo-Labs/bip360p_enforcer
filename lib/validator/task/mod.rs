@@ -1,7 +1,7 @@
-use std::{path::PathBuf, time::Instant};
+use std::{collections::HashMap, path::PathBuf, time::Instant};
 
 use async_broadcast::{Sender, TrySendError};
-use bitcoin::{Block, BlockHash, Network, Transaction, Work, hashes::Hash as _};
+use bitcoin::{Block, BlockHash, Network, OutPoint, Transaction, TxOut, Work, hashes::Hash as _};
 use error_fatality::Fatality as _;
 use fallible_iterator::FallibleIterator;
 use futures::FutureExt as _;
@@ -38,6 +38,10 @@ pub(in crate::validator) struct BlockHandler<'a> {
     pub(super) activation_height: u32,
     /// Per-block wall-clock budget for PQC signature verification.
     pub(super) pqc_verify_budget_ms: u64,
+    /// Prevouts resolved out-of-band from bitcoind before connect (e.g. a
+    /// multi-input P2MR spend's non-P2MR co-input, or a Taproot-v1 vault
+    /// input). Empty for the sync/disconnect paths, which need no such lookup.
+    pub(super) extra_prevouts: HashMap<OutPoint, TxOut>,
 }
 
 impl<'a> BlockHandler<'a> {
@@ -46,12 +50,14 @@ impl<'a> BlockHandler<'a> {
         network: Network,
         activation_height: u32,
         pqc_verify_budget_ms: u64,
+        extra_prevouts: HashMap<OutPoint, TxOut>,
     ) -> Self {
         Self {
             dbs,
             network,
             activation_height,
             pqc_verify_budget_ms,
+            extra_prevouts,
         }
     }
 }
@@ -112,6 +118,7 @@ impl BlockHandler<'_> {
             height,
             Bip360Activation(self.activation_height),
             &chain_utxos,
+            &self.extra_prevouts,
             self.pqc_verify_budget_ms,
         )
         .map_err(|source| error::ConnectBlock::Bip360 { block_hash, source })?;
@@ -806,6 +813,7 @@ mod connect_disconnect_tests {
             bitcoin::Network::Regtest,
             0,
             crate::validator::pqc::limits::DEFAULT_PQC_VERIFY_BUDGET_MS,
+            std::collections::HashMap::new(),
         )
     }
 

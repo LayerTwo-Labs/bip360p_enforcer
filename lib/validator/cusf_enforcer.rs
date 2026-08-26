@@ -1,9 +1,14 @@
 //! Implementation of [`cusf_enforcer_mempool::cusf_enforcer::CusfEnforcer`]
 
-use std::{collections::HashSet, future::Future};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+};
 
 use async_broadcast::TrySendError;
-use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash as _};
+use bitcoin::{
+    Amount, Block, BlockHash, OutPoint, ScriptBuf, Transaction, TxOut, Txid, hashes::Hash as _,
+};
 use cusf_enforcer_mempool::cusf_enforcer::{
     ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
 };
@@ -182,6 +187,7 @@ enum ConnectBlockRwTxnAction<'a> {
 fn connect_block_no_commit<'validator>(
     validator: &'validator Validator,
     block: &Block,
+    extra_prevouts: HashMap<OutPoint, TxOut>,
 ) -> Result<ConnectBlockRwTxnAction<'validator>, ConnectBlockError> {
     let block_hash = block.block_hash();
     let parent = block.header.prev_blockhash;
@@ -225,6 +231,7 @@ fn connect_block_no_commit<'validator>(
         validator.network,
         validator.activation_height(),
         validator.pqc_verify_budget_ms(),
+        extra_prevouts,
     );
     match parent_child_rwtxn
         .with_child_mut(|child_rwtxn| handler.connect_block(child_rwtxn, block))
@@ -253,6 +260,7 @@ trait ConnectBlockMode<'validator> {
         self,
         validator: &'validator Validator,
         block: &Block,
+        extra_prevouts: HashMap<OutPoint, TxOut>,
     ) -> Result<Self::Output, ConnectBlockError>;
 }
 
@@ -267,8 +275,9 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
         self,
         validator: &'validator Validator,
         block: &Block,
+        extra_prevouts: HashMap<OutPoint, TxOut>,
     ) -> Result<Self::Output, ConnectBlockError> {
-        match connect_block_no_commit(validator, block)? {
+        match connect_block_no_commit(validator, block, extra_prevouts)? {
             ConnectBlockRwTxnAction::Accept {
                 event,
                 remove_mempool_txs,
@@ -292,6 +301,137 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
                 Ok(ConnectBlockAction::Reject)
             }
         }
+    }
+}
+
+impl Validator {
+    /// Fetch, from bitcoind, prevouts that the synchronous block-connect path
+    /// cannot resolve from the indexed P2MR UTXO set or this block's own
+    /// outputs: a multi-input P2MR spend's non-P2MR co-input from a prior
+    /// block, and (from Phase 6b) Taproot-v1 vault inputs whose amount the
+    /// value-preservation checks require. Returns an empty map when the block
+    /// contains no such spend, or best-effort partial results on RPC failure —
+    /// the downstream checks fail closed on anything left unresolved.
+    async fn prefetch_external_prevouts(&self, block: &Block) -> HashMap<OutPoint, TxOut> {
+        // Identify prevouts the sync path cannot resolve. Today: a multi-input
+        // P2MR spend's co-input whose prevout is neither a tracked P2MR output
+        // nor created earlier in this block — required to build the committing
+        // `Prevouts::All` sighash. (Phase 6b extends this to Taproot-v1 vault
+        // inputs, whose amount the value-preservation checks need.)
+        let chain_p2mr = match self.p2mr_utxos() {
+            Ok(map) => map,
+            // Can't classify without the P2MR set; downstream fails closed.
+            Err(_) => return HashMap::new(),
+        };
+        let same_block: HashSet<OutPoint> = block
+            .txdata
+            .iter()
+            .flat_map(|tx| {
+                let txid = tx.compute_txid();
+                (0..tx.output.len() as u32).map(move |vout| OutPoint { txid, vout })
+            })
+            .collect();
+
+        let mut wanted: HashSet<OutPoint> = HashSet::new();
+        for tx in block.txdata.iter().skip(1) {
+            if tx.input.len() < 2 {
+                continue; // single-input spends need only their own prevout
+            }
+            let spends_p2mr = tx
+                .input
+                .iter()
+                .any(|input| chain_p2mr.contains_key(&input.previous_output));
+            if !spends_p2mr {
+                continue;
+            }
+            for input in &tx.input {
+                let outpoint = input.previous_output;
+                if chain_p2mr.contains_key(&outpoint) || same_block.contains(&outpoint) {
+                    continue; // resolvable locally
+                }
+                wanted.insert(outpoint);
+            }
+        }
+
+        if wanted.is_empty() {
+            return HashMap::new();
+        }
+        self.fetch_prevouts_getblock_v3(block.block_hash(), &wanted)
+            .await
+    }
+
+    /// Resolve `wanted` outpoints' prevouts via a single `getblock <hash> 3`
+    /// call, which returns every input's `prevout` (value + scriptPubKey) with
+    /// no txindex requirement. Best-effort: on any RPC/parse failure the entry
+    /// is simply absent and the downstream check fails closed.
+    async fn fetch_prevouts_getblock_v3(
+        &self,
+        block_hash: BlockHash,
+        wanted: &HashSet<OutPoint>,
+    ) -> HashMap<OutPoint, TxOut> {
+        use jsonrpsee::core::client::ClientT as _;
+
+        #[derive(serde::Deserialize)]
+        struct GbBlock {
+            tx: Vec<GbTx>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GbTx {
+            vin: Vec<GbVin>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GbVin {
+            txid: Option<Txid>,
+            vout: Option<u32>,
+            prevout: Option<GbPrevout>,
+        }
+        #[derive(serde::Deserialize)]
+        struct GbPrevout {
+            value: f64,
+            #[serde(rename = "scriptPubKey")]
+            script_pubkey: GbScriptPubKey,
+        }
+        #[derive(serde::Deserialize)]
+        struct GbScriptPubKey {
+            hex: String,
+        }
+
+        let params = jsonrpsee::rpc_params![block_hash, 3u8];
+        let parsed: GbBlock = match self.mainchain_client.request("getblock", params).await {
+            Ok(block) => block,
+            Err(err) => {
+                tracing::warn!(%block_hash, %err, "getblock verbosity=3 prevout fetch failed");
+                return HashMap::new();
+            }
+        };
+
+        let mut resolved = HashMap::new();
+        for tx in parsed.tx {
+            for vin in tx.vin {
+                let (Some(txid), Some(vout), Some(prevout)) = (vin.txid, vin.vout, vin.prevout)
+                else {
+                    continue; // coinbase input has no prevout
+                };
+                let outpoint = OutPoint { txid, vout };
+                if !wanted.contains(&outpoint) {
+                    continue;
+                }
+                let (Ok(value), Ok(spk_bytes)) = (
+                    Amount::from_btc(prevout.value),
+                    hex::decode(&prevout.script_pubkey.hex),
+                ) else {
+                    continue;
+                };
+                resolved.insert(
+                    outpoint,
+                    TxOut {
+                        value,
+                        script_pubkey: ScriptBuf::from_bytes(spk_bytes),
+                    },
+                );
+            }
+        }
+        resolved
     }
 }
 
@@ -327,6 +467,7 @@ impl CusfEnforcer for Validator {
             self.network,
             self.activation_height(),
             self.pqc_verify_budget_ms(),
+            HashMap::new(),
         );
         let sync_future = handler
             .sync_to_tip(
@@ -361,7 +502,11 @@ impl CusfEnforcer for Validator {
         &mut self,
         block: &Block,
     ) -> Result<ConnectBlockAction, Self::ConnectBlockError> {
-        ConnectBlockCommit.connect_block(self, block)
+        // Resolve prevouts the synchronous connect path cannot see on its own —
+        // a multi-input P2MR spend's non-P2MR co-input, or a Taproot-v1 vault
+        // input — by fetching them from bitcoind before entering the write txn.
+        let extra_prevouts = self.prefetch_external_prevouts(block).await;
+        ConnectBlockCommit.connect_block(self, block, extra_prevouts)
     }
 
     type DisconnectBlockError = DisconnectBlockError;
@@ -376,6 +521,7 @@ impl CusfEnforcer for Validator {
             self.network,
             self.activation_height(),
             self.pqc_verify_budget_ms(),
+            HashMap::new(),
         );
         let () = handler.disconnect_block(&mut rwtxn, &self.events_tx, block_hash)?;
         rwtxn.commit()?;
@@ -394,6 +540,7 @@ impl CusfEnforcer for Validator {
             self.network,
             self.activation_height(),
             self.pqc_verify_budget_ms(),
+            HashMap::new(),
         );
         let res = if handler.validate_tx(&mut rwtxn, tx)? {
             TxAcceptAction::Accept {
