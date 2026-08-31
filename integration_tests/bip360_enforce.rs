@@ -30,9 +30,24 @@ pub struct BlockTemplate {
     pub prev_hash: BlockHash,
     pub height: u32,
     pub coinbasevalue: u64,
+    /// Sum of the fees of the template's transactions, backed out of
+    /// `coinbasevalue` by [`BlockTemplate::subsidy_sats`].
+    pub template_fees: u64,
     pub bits: bitcoin::pow::CompactTarget,
     pub curtime: u32,
     pub version: i32,
+}
+
+impl BlockTemplate {
+    /// The block subsidy alone, with the template's fee income backed out.
+    ///
+    /// A hand-assembled block holds a different tx set than the template, so
+    /// claiming `coinbasevalue` overpays and is rejected as `bad-cb-amount`.
+    /// Forgoing the fees is always valid, and survives regtest's halvings.
+    #[must_use]
+    pub fn subsidy_sats(&self) -> u64 {
+        self.coinbasevalue.saturating_sub(self.template_fees)
+    }
 }
 
 /// Fetch bitcoind's current `getblocktemplate` (used only for header fields and
@@ -58,6 +73,13 @@ pub async fn fetch_block_template(post_setup: &mut PostSetup) -> anyhow::Result<
     let coinbasevalue = template["coinbasevalue"]
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("missing coinbasevalue"))?;
+    // Sum the template's per-tx fees so the coinbase can claim the subsidy
+    // alone: the hand-built block below holds our own tx set, not the
+    // template's, so claiming `coinbasevalue` would overpay (`bad-cb-amount`).
+    let template_fees: u64 = template["transactions"]
+        .as_array()
+        .map(|txs| txs.iter().filter_map(|tx| tx["fee"].as_u64()).sum())
+        .unwrap_or(0);
     let bits = template["bits"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing bits"))?;
@@ -72,6 +94,7 @@ pub async fn fetch_block_template(post_setup: &mut PostSetup) -> anyhow::Result<
         prev_hash,
         height,
         coinbasevalue,
+        template_fees,
         bits,
         curtime,
         version,
@@ -95,7 +118,7 @@ pub fn build_coinbase(post_setup: &PostSetup, template: &BlockTemplate) -> Trans
             witness: Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
         }],
         output: vec![TxOut {
-            value: Amount::from_sat(template.coinbasevalue),
+            value: Amount::from_sat(template.subsidy_sats()),
             script_pubkey: post_setup.mining_address.script_pubkey(),
         }],
     }

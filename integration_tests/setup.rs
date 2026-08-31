@@ -3,6 +3,7 @@
 use std::{
     borrow::Borrow,
     ffi::OsStr,
+    future::Future,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, LazyLock},
@@ -18,10 +19,7 @@ use bip360p_enforcer_lib::{
     },
 };
 use bitcoin::Address;
-use connectrpc::{
-    client::{ClientConfig, HttpClient},
-    error::ErrorCode,
-};
+use connectrpc::client::{ClientConfig, HttpClient};
 use futures::channel::mpsc;
 use reserve_port::ReservedPort;
 use temp_dir::TempDir;
@@ -384,28 +382,175 @@ pub async fn wait_for_validator_synced(
 ) -> anyhow::Result<proto::mainchain::BlockHeaderInfo> {
     const TIMEOUT: Duration = Duration::from_secs(120);
     const CHECK_INTERVAL: Duration = Duration::from_millis(100);
+    /// Budget for a single attempt. Connect RPCs carry no client-side deadline
+    /// by default, so a request to a peer that accepts the connection and then
+    /// never answers -- a foreign listener shadowing the port, an enforcer
+    /// still binding it -- would otherwise spend the whole `TIMEOUT` inside one
+    /// call and never reach the retry below. Bounding each attempt turns that
+    /// into one lost interval, and the retry opens a fresh connection.
+    const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
     let task = async {
         loop {
-            match client.get_chain_tip(GetChainTipRequest::default()).await {
-                Ok(resp) => {
+            let attempt = timeout(
+                ATTEMPT_TIMEOUT,
+                client.get_chain_tip(GetChainTipRequest::default()),
+            );
+            match attempt.await {
+                Ok(Ok(resp)) => {
                     return resp
                         .into_owned()
                         .block_header_info
                         .into_option()
                         .ok_or_else(|| anyhow!("no block header info in chain tip"));
                 }
-                // Validator is not synced yet
-                Err(err) if err.code == ErrorCode::Unavailable => {
-                    tracing::trace!("Validator is not synced yet, waiting...");
+                // Not ready yet. `Unavailable` means the validator is still
+                // syncing; a transport error means the gRPC server isn't
+                // actually serving yet, even though the port accepted a TCP
+                // connection. With the whole suite starting processes at once
+                // both are routine, so retry either until the timeout rather
+                // than failing a test on a startup hiccup.
+                Ok(Err(err)) => {
+                    tracing::trace!("Validator not ready yet ({err}), waiting...");
                     sleep(CHECK_INTERVAL).await;
                 }
-                Err(err) => return Err(anyhow!("Error getting enforcer tip: {err}")),
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        "chain tip request got no response within {ATTEMPT_TIMEOUT:?}; \
+                         retrying on a fresh connection"
+                    );
+                }
             }
         }
     };
     timeout(TIMEOUT, task)
         .await
         .map_err(|_| anyhow!("Timeout waiting for validator to sync after {TIMEOUT:?}"))?
+}
+
+/// Default budget for the `wait_for_*` helpers below. Generous, because the
+/// whole suite runs in parallel and the machine is saturated; these are
+/// deadlines that catch a genuinely stuck test, not expected wait times.
+pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Interval between polls for conditions checked in-process or over an already
+/// open connection (gRPC, a file read). Short, because these are cheap and the
+/// conditions are normally already true on the first check.
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Interval between polls for conditions checked by shelling out to
+/// `bitcoin-cli`. Each check forks a process and opens a fresh RPC connection,
+/// so polling these as fast as the in-process checks would put more load on an
+/// already-saturated machine than it saves in latency.
+pub const WAIT_POLL_INTERVAL_SUBPROCESS: Duration = Duration::from_millis(250);
+
+/// Poll `check` until it reports the condition has been reached, erroring out
+/// with `what` in the message if it hasn't happened within `WAIT_TIMEOUT`.
+///
+/// Prefer this over sleeping a fixed duration: it returns as soon as the state
+/// is actually observable (normally on the first poll) instead of paying a
+/// worst-case guess every run, and it fails loudly rather than silently
+/// continuing against state that was never reached.
+///
+/// A failing `check` counts as "not yet", not as a test failure: processes are
+/// still coming up while the suite runs in parallel, so an RPC can legitimately
+/// be refused or time out on the first attempts. Whatever it failed with last
+/// is reported if the deadline runs out.
+pub async fn wait_until<Check, Fut>(what: &str, check: Check) -> anyhow::Result<()>
+where
+    Check: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<bool>>,
+{
+    wait_until_every(what, WAIT_POLL_INTERVAL, check).await
+}
+
+/// [`wait_until`], with an explicit poll interval. Use
+/// [`WAIT_POLL_INTERVAL_SUBPROCESS`] for checks that shell out.
+pub async fn wait_until_every<Check, Fut>(
+    what: &str,
+    poll_interval: Duration,
+    mut check: Check,
+) -> anyhow::Result<()>
+where
+    Check: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<bool>>,
+{
+    let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
+    let mut last_err: Option<anyhow::Error> = None;
+    loop {
+        // Bound each individual check by whatever budget is left, so a single
+        // hung RPC can't outlive the deadline.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match timeout(remaining, check()).await {
+            Ok(Ok(true)) => return Ok(()),
+            Ok(Ok(false)) => tracing::trace!("still waiting for {what}..."),
+            Ok(Err(err)) => {
+                tracing::trace!("still waiting for {what} (check failed: {err:#})");
+                last_err = Some(err);
+            }
+            Err(_elapsed) => break,
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        sleep(poll_interval.min(remaining)).await;
+    }
+    Err(match last_err {
+        Some(err) => err.context(format!(
+            "Timed out after {WAIT_TIMEOUT:?} waiting for {what}; last check failed"
+        )),
+        None => anyhow!("Timeout waiting for {what} after {WAIT_TIMEOUT:?}"),
+    })
+}
+
+/// Wait until `txid` is in `bitcoin_cli`'s node's mempool.
+///
+/// The wallet broadcasts asynchronously, so a tx is not necessarily in the
+/// node's mempool by the time the RPC that created it returns.
+pub async fn wait_for_tx_in_mempool(
+    bitcoin_cli: &bins::BitcoinCli,
+    txid: &bitcoin::Txid,
+) -> anyhow::Result<()> {
+    let txid = txid.to_string();
+    wait_until_every(
+        &format!("tx `{txid}` to enter the mempool"),
+        WAIT_POLL_INTERVAL_SUBPROCESS,
+        || async {
+            Ok(bitcoin_cli
+                .command::<String, _, _, _, _>([], "getmempoolentry", [txid.clone()])
+                .run_utf8()
+                .await
+                .is_ok())
+        },
+    )
+    .await
+}
+
+/// Reported by the enforcer's `getblocktemplate` while its mempool syncs.
+const RPC_CLIENT_IN_INITIAL_DOWNLOAD: i32 = -10;
+
+/// Block until the enforcer's `getblocktemplate` endpoint serves templates,
+/// rather than reporting that it is still syncing. Any other answer counts as
+/// ready; a transport error is not an answer, and is retried.
+pub async fn wait_for_block_templates(
+    gbt_client: &jsonrpsee::http_client::HttpClient,
+) -> anyhow::Result<()> {
+    use cusf_enforcer_mempool::server::RpcClient as _;
+
+    wait_until("the enforcer to serve block templates", || async {
+        let request = bitcoin_jsonrpsee::client::BlockTemplateRequest::default();
+        match gbt_client.get_block_template(request).await {
+            Ok(_) => Ok(true),
+            Err(jsonrpsee::core::client::Error::Call(err)) => {
+                Ok(err.code() != RPC_CLIENT_IN_INITIAL_DOWNLOAD)
+            }
+            Err(err) => Err(err.into()),
+        }
+    })
+    .await
 }
 
 /// Running tasks, aborted on drop
@@ -750,6 +895,22 @@ impl PostSetup {
         let gbt_client = jsonrpsee::http_client::HttpClient::builder()
             .build(format!("http://127.0.0.1:{}", enforcer.serve_rpc_port))
             .map_err(|err| anyhow!("failed to create gbt client: {err:#}"))?;
+
+        // The JSON-RPC (`getblocktemplate`) server only runs in the mode that
+        // serves block templates, and it binds before the enforcer has synced.
+        // Both the `gbt_client` above and the signet miner's GBT script talk to
+        // it, so wait for it to serve a template rather than racing the first
+        // request against startup.
+        if enforcer.enable_block_template_server {
+            wait_for_port(
+                "127.0.0.1",
+                enforcer.serve_rpc_port,
+                Duration::from_secs(60),
+            )
+            .await
+            .map_err(|e| anyhow!("Failed waiting for enforcer JSON-RPC port: {e}"))?;
+            wait_for_block_templates(&gbt_client).await?;
+        }
         if let Some(signet_miner) = signet_miner.as_mut() {
             let () = SignetSetup::configure_miner(signet_miner, &dirs.base_dir, &enforcer)?;
         }
