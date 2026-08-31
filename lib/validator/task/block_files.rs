@@ -89,7 +89,7 @@ fn connect_pending_blocks(
     let mut rwtxn: RwTxn<'_> = handler.dbs.write_txn()?;
     let rejected_block = handler.handle_block_batch(&mut rwtxn, pending_blocks, event_tx)?;
     rwtxn.commit()?;
-    let Some(rejected_block) = rejected_block else {
+    let Some((rejected_block, _reason)) = rejected_block else {
         *total_handled_blocks += pending_blocks.len();
         pending_blocks.clear();
         return Ok(true);

@@ -965,7 +965,8 @@ async fn sync_to_height(
     let started_at = tokio::time::Instant::now();
     validator
         .sync_to_tip(cancel.cancelled(), target_hash)
-        .await?;
+        .await
+        .map_err(miette::Report::from_err)?;
     let elapsed = started_at.elapsed();
 
     let final_height = validator.try_get_block_height().ok().flatten();

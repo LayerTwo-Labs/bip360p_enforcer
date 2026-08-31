@@ -7,7 +7,9 @@ use cusf_enforcer_mempool::{
         initial_block_template::SuffixTxsItem,
         typewit::const_marker::{Bool, BoolWit},
     },
-    cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
+    cusf_enforcer::{
+        ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
+    },
 };
 use tracing::instrument;
 
@@ -155,12 +157,13 @@ impl BlockProducer {
 
 impl CusfEnforcer for BlockProducer {
     type SyncError = <Validator as CusfEnforcer>::SyncError;
+    type InvalidBlockReason = <Validator as CusfEnforcer>::InvalidBlockReason;
 
     async fn sync_to_tip<Signal>(
         &mut self,
         shutdown_signal: Signal,
         tip_hash: BlockHash,
-    ) -> Result<(), Self::SyncError>
+    ) -> Result<(), SyncToTipError<Self::InvalidBlockReason, Self::SyncError>>
     where
         Signal: std::future::Future<Output = ()> + Send,
     {
@@ -169,6 +172,15 @@ impl CusfEnforcer for BlockProducer {
             .clone()
             .sync_to_tip(shutdown_signal, tip_hash)
             .await
+    }
+
+    type ValidateBlockError = <Validator as CusfEnforcer>::ValidateBlockError;
+
+    fn validate_block(
+        &self,
+        block: &bitcoin::Block,
+    ) -> Result<Option<String>, Self::ValidateBlockError> {
+        self.inner.validator.validate_block(block)
     }
 
     type ConnectBlockError = error::ConnectBlock;

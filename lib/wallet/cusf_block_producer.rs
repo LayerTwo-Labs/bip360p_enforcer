@@ -11,7 +11,9 @@ use cusf_enforcer_mempool::{
         CoinbaseTxn, CusfBlockProducer, FilledBlockTemplate, InitialBlockTemplate,
         typewit::const_marker::{Bool, BoolWit},
     },
-    cusf_enforcer::{ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction},
+    cusf_enforcer::{
+        ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
+    },
 };
 use tracing::instrument;
 
@@ -203,6 +205,7 @@ async fn sync_wallet_to_tip(
 
 impl CusfEnforcer for Wallet {
     type SyncError = error::InitialSync;
+    type InvalidBlockReason = crate::validator::cusf_enforcer::InvalidBlockReason;
 
     #[instrument(skip_all, fields(tip_hash))]
     // TODO: this is confusing. This function is called multiple times? I want an easy
@@ -213,10 +216,28 @@ impl CusfEnforcer for Wallet {
         &mut self,
         shutdown_signal: Signal,
         tip_hash: BlockHash,
-    ) -> std::result::Result<(), Self::SyncError>
+    ) -> std::result::Result<(), SyncToTipError<Self::InvalidBlockReason, Self::SyncError>>
     where
         Signal: Future<Output = ()> + Send,
     {
+        // Map the validator's SyncToTipError into ours: InvalidBlock propagates
+        // unchanged (the driver still invalidateblocks during initial sync);
+        // Other's validator SyncError converts into our InitialSync.
+        fn map_val_err(
+            err: SyncToTipError<
+                crate::validator::cusf_enforcer::InvalidBlockReason,
+                crate::validator::cusf_enforcer::SyncError,
+            >,
+        ) -> SyncToTipError<crate::validator::cusf_enforcer::InvalidBlockReason, error::InitialSync>
+        {
+            match err {
+                SyncToTipError::InvalidBlock { block_hash, reason } => {
+                    SyncToTipError::InvalidBlock { block_hash, reason }
+                }
+                SyncToTipError::Other(err) => SyncToTipError::Other(err.into()),
+            }
+        }
+
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         tokio::pin!(shutdown_signal);
         let sync_validator_to_tip = {
@@ -233,32 +254,45 @@ impl CusfEnforcer for Wallet {
             match futures::future::select(shutdown_signal, sync_validator_to_tip).await {
                 futures::future::Either::Left(((), sync_validator_to_tip)) => {
                     cancellation_token.cancel();
-                    let () = sync_validator_to_tip.await?;
-                    return Err(Self::SyncError::Shutdown);
+                    let () = sync_validator_to_tip.await.map_err(map_val_err)?;
+                    return Err(SyncToTipError::Other(Self::SyncError::Shutdown));
                 }
                 futures::future::Either::Right((res, shutdown_signal)) => {
-                    let () = res?;
+                    let () = res.map_err(map_val_err)?;
                     shutdown_signal
                 }
             };
         // The validator may have stopped short of `tip_hash`. It
         // stops early the moment it hits a block it rejects Ask it
         // what it actually reached.
-        let synced_tip_hash = self.inner.validator().get_mainchain_tip()?;
+        let synced_tip_hash = self
+            .inner
+            .validator()
+            .get_mainchain_tip()
+            .map_err(|err| SyncToTipError::Other(err.into()))?;
         tracing::debug!(%tip_hash, %synced_tip_hash, "Synced validator");
 
         let sync_wallet_to_tip = sync_wallet_to_tip(self, synced_tip_hash, None);
         tokio::pin!(sync_wallet_to_tip);
         match futures::future::select(shutdown_signal, sync_wallet_to_tip).await {
             futures::future::Either::Left(((), _sync_wallet_to_tip)) => {
-                Err(Self::SyncError::Shutdown)
+                Err(SyncToTipError::Other(Self::SyncError::Shutdown))
             }
             futures::future::Either::Right((res, _)) => {
-                let () = res?;
+                let () = res.map_err(|err| SyncToTipError::Other(err.into()))?;
                 tracing::debug!(%synced_tip_hash, "Synced wallet");
                 Ok(())
             }
         }
+    }
+
+    type ValidateBlockError = crate::validator::cusf_enforcer::ValidateBlockError;
+
+    fn validate_block(
+        &self,
+        block: &bitcoin::Block,
+    ) -> Result<Option<String>, Self::ValidateBlockError> {
+        self.inner.validator().validate_block(block)
     }
 
     type ConnectBlockError = error::ConnectBlock;

@@ -533,7 +533,7 @@ impl BlockHandler<'_> {
         rwtxn: &mut RwTxn<'a>,
         blocks: &[Block],
         event_tx: &Sender<Event>,
-    ) -> Result<Option<BlockHash>, error::Sync> {
+    ) -> Result<Option<(BlockHash, String)>, error::Sync> {
         let dbs = self.dbs;
         let start = Instant::now();
 
@@ -556,12 +556,12 @@ impl BlockHandler<'_> {
             let event = match self.connect_block(rwtxn, block) {
                 Ok(event) => event,
                 Err(err) if !err.is_fatal() => {
+                    let reason = format!("{:#}", crate::errors::ErrorChain::new(&err));
                     tracing::info!(
                         %block_hash,
-                        "encountered invalid block during batch sync: {:#}",
-                        crate::errors::ErrorChain::new(&err),
+                        "encountered invalid block during batch sync: {reason}",
                     );
-                    return Ok(Some(block_hash));
+                    return Ok(Some((block_hash, reason)));
                 }
                 Err(err) => return Err(err.into()),
             };
@@ -633,7 +633,7 @@ impl BlockHandler<'_> {
         main_blocks_dir: Option<PathBuf>,
         main_tip: BlockHash,
         cancel: CancellationToken,
-    ) -> Result<(), error::Sync>
+    ) -> Result<Option<(BlockHash, String)>, error::Sync>
     where
         MainRpcClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     {
@@ -687,7 +687,7 @@ impl BlockHandler<'_> {
 
         if missing_blocks.is_empty() {
             tracing::info!("No missing blocks, skipping sync");
-            return Ok(());
+            return Ok(None);
         }
 
         tracing::info!(
@@ -738,14 +738,14 @@ impl BlockHandler<'_> {
             total_blocks_fetched += blocks.len();
 
             let mut rwtxn = dbs.write_txn()?;
-            let rejected_block = self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
+            let rejected = self.handle_block_batch(&mut rwtxn, &blocks, event_tx)?;
             rwtxn.commit()?;
-            if let Some(rejected_block) = rejected_block {
+            if let Some((rejected_block, reason)) = rejected {
                 tracing::warn!(
                     %rejected_block,
                     "stopping batch sync early: a rejected block was encountered"
                 );
-                return Ok(());
+                return Ok(Some((rejected_block, reason)));
             }
         }
 
@@ -753,7 +753,7 @@ impl BlockHandler<'_> {
             "Synced {total_blocks_fetched} blocks in {:?}",
             start.elapsed()
         );
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -773,7 +773,7 @@ impl BlockHandler<'_> {
         main_blocks_dir: Option<PathBuf>,
         main_tip: BlockHash,
         signals: SyncSignals,
-    ) -> Result<(), error::Sync>
+    ) -> Result<Option<(BlockHash, String)>, error::Sync>
     where
         MainClient: bitcoin_jsonrpsee::client::MainClient + Sync,
     {
@@ -786,7 +786,7 @@ impl BlockHandler<'_> {
             signals.cancel.clone(),
         )
         .await?;
-        let () = self
+        let rejected = self
             .sync_blocks(
                 &signals.event_tx,
                 main_rpc_client,
@@ -795,7 +795,7 @@ impl BlockHandler<'_> {
                 signals.cancel.clone(),
             )
             .await?;
-        Ok(())
+        Ok(rejected)
     }
 }
 

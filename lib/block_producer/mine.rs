@@ -72,6 +72,9 @@ impl BlockProducer {
                 rules,
                 capabilities: HashSet::from(["coinbasetxn".to_string()]),
                 long_poll_id: None,
+                // Normal template fetch (not a BIP23 proposal): mode/data absent.
+                mode: None,
+                data: None,
             })
             .await
             .map_err(|err| error::GetBlockTemplate {
