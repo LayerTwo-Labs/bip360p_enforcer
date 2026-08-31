@@ -373,13 +373,15 @@ verify-reflection:
         --serve-grpc-addr="$GRPC_ADDR" >"$WORK_DIR/enforcer.log" 2>&1 &
     ENFORCER_PID=$!
     wait_for_port "$ENFORCER_GRPC_PORT" enforcer || { cat "$WORK_DIR/enforcer.log" >&2; exit 1; }
+    # ListServices advertises what this process actually mounted, not
+    # everything in the descriptor pool. The enforcer above runs on regtest
+    # with neither --enable-wallet nor --enable-block-template-server, so
+    # WalletService and BlockProducerService are absent while MiningService
+    # (regtest) is present.
     EXPECTED_SERVICES="$(printf '%s\n' \
         'cusf.crypto.v1.CryptoService' \
-        'cusf.mainchain.v1.ValidatorService' \
-        'cusf.mainchain.v1.WalletService' \
-        'cusf.sidechain.v1.SidechainService' \
-        'grpc.reflection.v1.ServerReflection' \
-        'grpc.reflection.v1alpha.ServerReflection')"
+        'cusf.mainchain.v1.MiningService' \
+        'cusf.mainchain.v1.ValidatorService')"
     ACTUAL_SERVICES="$(grpcurl -plaintext "$GRPC_ADDR" list | sort)"
     [ "$ACTUAL_SERVICES" = "$EXPECTED_SERVICES" ] || fail "grpcurl list returned unexpected services"
     grpcurl -plaintext "$GRPC_ADDR" describe cusf.mainchain.v1.ValidatorService \

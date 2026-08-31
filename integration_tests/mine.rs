@@ -57,6 +57,8 @@ pub enum MineGbtError {
     GbtClient(#[from] jsonrpsee::core::ClientError),
     #[error("Missing coinbasetxn in block template")]
     MissingCoinbaseTxn,
+    #[error("getblocktemplate returned a proposal verdict, not a template")]
+    TemplateExpected,
     #[error("Expected block event")]
     NoBlockEvent,
     #[error("Submitting block failed with error: `{err_msg}`")]
@@ -75,7 +77,9 @@ async fn mine_gbt(post_setup: &mut PostSetup) -> Result<bitcoin::BlockHash, Mine
     let block_template = post_setup
         .gbt_client
         .get_block_template(gbt_request)
-        .await?;
+        .await?
+        .into_template()
+        .ok_or(MineGbtError::TemplateExpected)?;
     let bitcoin_jsonrpsee::client::CoinbaseTxnOrValue::Txn(coinbase_tx) =
         block_template.coinbase_txn_or_value
     else {

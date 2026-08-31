@@ -234,7 +234,6 @@ pub fn tests(
 
     async_trials.extend(unconfirmed_transactions_tests);
 
-    // FINAL_REPORT claim: testmempoolaccept never inserts (control: sendraw does).
     async_trials.extend([new_trial(
         "file_based_block_parser".to_string(),
         TestSetupComponents {
@@ -248,17 +247,22 @@ pub fn tests(
     )]);
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
-    async_trials.push(new_trial(
-        "generate_to_address".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::GetBlockTemplate,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::test_generate_to_address::test_generate_to_address,
-    ));
+    // GetBlockTemplate mode mines from templates served by the enforcer's own
+    // `getblocktemplate` server; NoMempool mode exercises the fallback to
+    // Bitcoin Core's templates.
+    async_trials.extend([Mode::GetBlockTemplate, Mode::NoMempool].map(|mode| {
+        new_trial(
+            format!("generate_to_address (mode: {mode})"),
+            TestSetupComponents {
+                bin_paths: bin_paths.clone(),
+                network: Network::Regtest,
+                mode,
+                file_registry: file_registry.clone(),
+                failure_collector: failure_collector.clone(),
+            },
+            move |setup| crate::test_generate_to_address::test_generate_to_address(setup, mode),
+        )
+    }));
     // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
     // `SetupOpts` to start the enforcer without a wallet.
     async_trials.push(new_trial(
@@ -346,43 +350,6 @@ pub fn tests(
         crate::test_cusf_claims::test_cusf_claim_testmempoolaccept_no_insert,
     ));
 
-    async_trials.extend([new_trial(
-        "file_based_block_parser".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::Mempool,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::test_file_based_block_parser::test_file_based_block_parser,
-    )]);
-    // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
-    // `SetupOpts` to start the enforcer without a wallet.
-    async_trials.push(new_trial(
-        "generate_to_address".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::GetBlockTemplate,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::test_generate_to_address::test_generate_to_address,
-    ));
-    // Uses `new_trial` rather than `new_trial_with_setup`: it needs custom
-    // `SetupOpts` to start the enforcer without a wallet.
-    async_trials.push(new_trial(
-        "wallet_less_block_template".to_string(),
-        TestSetupComponents {
-            bin_paths: bin_paths.clone(),
-            network: Network::Regtest,
-            mode: Mode::GetBlockTemplate,
-            file_registry: file_registry.clone(),
-            failure_collector: failure_collector.clone(),
-        },
-        crate::test_wallet_less_block_template::test_wallet_less_block_template,
-    ));
     // Full BIP 360 wallet lifecycle (create → receive → spend → mine →
     // validate) for all four schemes against plain bitcoind. Needs the
     // enforcer's own block-template server (to inject nonstandard P2MR spends)

@@ -10,10 +10,9 @@ use bitcoin::{
     Amount, Block, BlockHash, OutPoint, ScriptBuf, Transaction, TxOut, Txid, hashes::Hash as _,
 };
 use cusf_enforcer_mempool::cusf_enforcer::{
-    ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, TxAcceptAction,
+    ConnectBlockAction, CusfEnforcer, DisconnectBlockAction, SyncToTipError, TxAcceptAction,
 };
 use error_fatality::{Nested as _, Split};
-use futures::TryFutureExt as _;
 use miette::Diagnostic;
 use ouroboros::self_referencing;
 use sneed::{RwTxn, db, env, rwtxn};
@@ -34,6 +33,22 @@ use crate::{
 #[error(transparent)]
 #[repr(transparent)]
 pub struct SyncError(#[from] task::error::Sync);
+
+/// Human-readable reason a block was rejected by the enforcer's own rules while
+/// syncing to tip. Surfaced as [`SyncToTipError::InvalidBlock`] so the
+/// cusf-enforcer-mempool driver calls `invalidateblock` and re-syncs.
+#[derive(Debug, Diagnostic, Error)]
+#[error("{0}")]
+pub struct InvalidBlockReason(String);
+
+/// Error from the read-only [`CusfEnforcer::validate_block`] dry run (DB reads).
+#[derive(Debug, Diagnostic, Error)]
+pub enum ValidateBlockError {
+    #[error(transparent)]
+    TipHeight(#[from] crate::validator::TryGetMainchainTipHeightError),
+    #[error(transparent)]
+    P2mrUtxos(#[from] crate::validator::GetP2mrUtxosError),
+}
 
 #[derive(Debug, Diagnostic, Error)]
 enum ConnectBlockErrorInner {
@@ -445,12 +460,13 @@ impl Validator {
 
 impl CusfEnforcer for Validator {
     type SyncError = SyncError;
+    type InvalidBlockReason = InvalidBlockReason;
 
     async fn sync_to_tip<Signal>(
         &mut self,
         shutdown_signal: Signal,
         tip: BlockHash,
-    ) -> Result<(), Self::SyncError>
+    ) -> Result<(), SyncToTipError<Self::InvalidBlockReason, Self::SyncError>>
     where
         Signal: Future<Output = ()> + Send,
     {
@@ -459,7 +475,9 @@ impl CusfEnforcer for Validator {
         let header_sync_progress_tx = {
             let mut header_sync_progress_rx_write = self.header_sync_progress_rx.write();
             if header_sync_progress_rx_write.is_some() {
-                return Err(task::error::Sync::HeaderSyncInProgress.into());
+                return Err(SyncToTipError::Other(SyncError(
+                    task::error::Sync::HeaderSyncInProgress,
+                )));
             }
             let (header_sync_progress_tx, header_sync_progress_rx) =
                 tokio::sync::watch::channel(HeaderSyncProgress {
@@ -477,29 +495,38 @@ impl CusfEnforcer for Validator {
             self.pqc_verify_budget_ms(),
             HashMap::new(),
         );
-        let sync_future = handler
-            .sync_to_tip(
-                &self.mainchain_client,
-                &self.mainchain_rest_client,
-                self.mainchain_blocks_dir.clone(),
-                tip,
-                task::SyncSignals {
-                    cancel: cancel.clone(),
-                    header_sync_progress_tx,
-                    event_tx: self.events_tx.clone(),
-                },
-            )
-            .map_err(SyncError);
+        let sync_future = handler.sync_to_tip(
+            &self.mainchain_client,
+            &self.mainchain_rest_client,
+            self.mainchain_blocks_dir.clone(),
+            tip,
+            task::SyncSignals {
+                cancel: cancel.clone(),
+                header_sync_progress_tx,
+                event_tx: self.events_tx.clone(),
+            },
+        );
 
         tokio::select! {
             result = sync_future => {
                 *self.header_sync_progress_rx.write() = None;
-                result
+                match result {
+                    Ok(None) => Ok(()),
+                    // A block was rejected by our rules while syncing: signal the
+                    // driver so it `invalidateblock`s and re-syncs (dep #93).
+                    Ok(Some((block_hash, reason))) => Err(SyncToTipError::InvalidBlock {
+                        block_hash,
+                        reason: InvalidBlockReason(reason),
+                    }),
+                    Err(err) => Err(SyncToTipError::Other(SyncError(err))),
+                }
             }
             _ = shutdown_signal => {
                 cancel.cancel();
                 *self.header_sync_progress_rx.write() = None;
-                Err(SyncError(crate::validator::task::error::Sync::Shutdown))
+                Err(SyncToTipError::Other(SyncError(
+                    crate::validator::task::error::Sync::Shutdown,
+                )))
             }
         }
     }
@@ -559,5 +586,35 @@ impl CusfEnforcer for Validator {
             TxAcceptAction::Reject
         };
         Ok(res)
+    }
+
+    type ValidateBlockError = ValidateBlockError;
+
+    /// Dry-run the enforcer's BIP360 rules against `block` without mutating any
+    /// state (used by `getblocktemplate` proposal mode). `Ok(None)` accepts,
+    /// `Ok(Some(reason))` rejects.
+    ///
+    /// This is synchronous, so unlike the connect path it cannot `getblock`-v3
+    /// prefetch external prevouts: a proposed block spending a prior-block vault
+    /// or multi-input-P2MR co-input whose prevout is not locally known fails
+    /// closed (reported invalid) — safe and conservative for a dry run.
+    fn validate_block(&self, block: &Block) -> Result<Option<String>, Self::ValidateBlockError> {
+        let Some(tip_height) = self.try_get_block_height()? else {
+            return Ok(None); // not synced yet; nothing to enforce
+        };
+        let height = tip_height + 1;
+        let chain_p2mr = self.p2mr_utxos()?;
+        let activation =
+            crate::validator::pqc::activation::Bip360Activation(self.activation_height());
+        match crate::validator::pqc::validate_block_transactions(
+            block,
+            height,
+            activation,
+            &chain_p2mr,
+            self.pqc_verify_budget_ms(),
+        ) {
+            Ok(()) => Ok(None),
+            Err(err) => Ok(Some(format!("{:#}", crate::errors::ErrorChain::new(&err)))),
+        }
     }
 }

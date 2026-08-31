@@ -2,6 +2,17 @@ ARG RUST_VERSION=1
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 WORKDIR /workspace
+
+# `bitcoinpqc` (BIP360 PQC: ML-DSA / SLH-DSA) builds the libbitcoinpqc C
+# library via CMake and generates its bindings with bindgen, so the builder
+# needs a C/C++ toolchain, cmake, and libclang. Its CMake also git-clones
+# secp256k1 via FetchContent, so `git` is required too. The slim base ships
+# none of these. Kept before `COPY . .` so this layer caches independently of
+# source changes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake build-essential clang libclang-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 RUN cargo build --locked --release
 
