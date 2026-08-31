@@ -13,7 +13,7 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
         ..Default::default()
     };
 
-    let post_setup = setup.setup(mode, setup_opts, res_tx).await?;
+    let mut post_setup = setup.setup(mode, setup_opts, res_tx).await?;
 
     // In GetBlockTemplate mode, `GenerateToAddress` fetches its block template
     // from the enforcer's own `getblocktemplate` server, which only comes up
@@ -27,6 +27,15 @@ pub async fn test_generate_to_address(setup: PreSetup, mode: Mode) -> anyhow::Re
         )
         .await?;
     }
+
+    // `wait_for_validator_synced` (run by `setup`) only waits for the validator
+    // gRPC to respond, not for it to reach the chain tip. In NoMempool mode
+    // `GenerateToAddress` builds on Bitcoin Core's template (already at the
+    // setup tip), so if the validator is still catching up the mining service
+    // rejects the template with `failed_precondition: block template is built
+    // on X but the validator tip is Y`. Wait until the validator has caught up
+    // to Core's tip before generating.
+    crate::bip360_enforce::wait_for_enforcer_synced(&mut post_setup).await?;
 
     async fn block_count(
         bitcoin_cli: &bip360p_enforcer_lib::bins::BitcoinCli,
