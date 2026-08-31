@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use bip360p_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetChainTipRequest};
 use bitcoin::{
     Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxMerkleNode,
     TxOut, Witness,
@@ -18,7 +19,6 @@ use bitcoin::{
     script::{Builder as ScriptBuilder, PushBytesBuf},
     transaction::Version,
 };
-use cusf_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetChainTipRequest};
 use serde::Deserialize;
 use tokio::time::sleep;
 

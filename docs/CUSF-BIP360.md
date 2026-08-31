@@ -178,16 +178,16 @@ lib/validator/dbs/
 | `connect_block` intra-block UTXO map                                   | Done                                                                 |
 | Cross-block P2MR prevout lookup                                        | Done — `dbs/p2mr_utxos.rs` + incremental block validation            |
 | Mempool `accept_tx` with explicit parents                              | Done                                                                 |
-| Unit tests (`cargo test -p cusf_enforcer_lib pqc::`)                   | Done — per-scheme sign/verify roundtrips + rejection matrix          |
+| Unit tests (`cargo test -p bip360p_enforcer_lib pqc::`)                | Done — per-scheme sign/verify roundtrips + rejection matrix          |
 | Wallet lifecycle (create → receive → spend → mine → validate)          | Done — `SpendP2mr` + block-producer suffix injection                 |
 | Integration trial `bip360_wallet_lifecycle` (four schemes, plain Core) | Live **PASS** — create/fund/spend/mine/validate for all four schemes |
 
 ## Verification
 
 ```bash
-cargo test -p cusf_enforcer_lib pqc::          # per-scheme roundtrips + rejection matrix
+cargo test -p bip360p_enforcer_lib pqc::          # per-scheme roundtrips + rejection matrix
 just verify                                    # fmt-check, clippy, unit + pqc tests, integration-build
-CUSF_ENFORCER_INTEGRATION_TEST_ENV=$PWD/integration_tests/example.env \
+BIP360P_ENFORCER_INTEGRATION_TEST_ENV=$PWD/integration_tests/example.env \
   just it bip360_wallet_lifecycle              # full four-scheme E2E vs plain bitcoind
 ```
 

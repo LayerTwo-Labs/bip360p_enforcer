@@ -1,5 +1,5 @@
 [package]
-name = "cusf_enforcer"
+name = "bip360p_enforcer"
 authors.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,7 +9,7 @@ version.workspace = true
 axum = { workspace = true, features = ["http2", "tokio"] }
 bdk_wallet = { workspace = true }
 buffa = { workspace = true }
-cusf_enforcer_lib = { path = "../lib", default-features = false }
+bip360p_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin = { workspace = true }
 bitcoin-jsonrpsee = { workspace = true }
 cusf-enforcer-mempool = { workspace = true }
@@ -39,13 +39,13 @@ uuid = { workspace = true }
 
 [features]
 default = ["rustls"]
-openssl = ["cusf_enforcer_lib/openssl"]
-rustls = ["cusf_enforcer_lib/rustls"]
-rustls-ring = ["cusf_enforcer_lib/rustls-ring"]
+openssl = ["bip360p_enforcer_lib/openssl"]
+rustls = ["bip360p_enforcer_lib/rustls"]
+rustls-ring = ["bip360p_enforcer_lib/rustls-ring"]
 
 [lints]
 workspace = true
 
 [[bin]]
-name = "cusf_enforcer"
+name = "bip360p_enforcer"
 path = "main.rs"

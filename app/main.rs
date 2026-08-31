@@ -6,12 +6,7 @@ use std::{
 };
 
 use bdk_wallet::bip39::{Language, Mnemonic};
-use bitcoin::ScriptBuf;
-use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
-use connectrpc::Router;
-use connectrpc_health::{HealthExt, HealthService, StaticChecker};
-use connectrpc_reflection::Reflector;
-use cusf_enforcer_lib::{
+use bip360p_enforcer_lib::{
     block_producer::BlockProducer,
     cli::{self, WalletSyncSource},
     errors::ErrorChain,
@@ -31,6 +26,11 @@ use cusf_enforcer_lib::{
     version,
     wallet::{self, error::BitcoinCoreRPC},
 };
+use bitcoin::ScriptBuf;
+use bitcoin_jsonrpsee::{MainClient, jsonrpsee::http_client::transport};
+use connectrpc::Router;
+use connectrpc_health::{HealthExt, HealthService, StaticChecker};
+use connectrpc_reflection::Reflector;
 use cusf_enforcer_mempool::cusf_block_producer::CusfBlockProducer;
 use either::Either;
 use futures::{FutureExt as _, TryFutureExt as _, channel::oneshot};
@@ -420,7 +420,7 @@ async fn run_connect_server(
     // in buf.gen.yaml). Each generated package embeds the full file closure, so
     // any one package's pool covers every service.
     let reflector = Reflector::from_descriptor_pool(Arc::clone(
-        cusf_enforcer_lib::proto::mainchain::descriptor_pool(),
+        bip360p_enforcer_lib::proto::mainchain::descriptor_pool(),
     ))
     .map_err(error::ConnectServer::Reflection)?
     .with_services(service_names.iter().copied());
@@ -614,8 +614,10 @@ async fn get_zmq_addr_sequence(
             help(
                 "Your Bitcoin Core instance is not configured to send ZMQ notifications for the `pubsequence` notification type"
             ),
-            code(cusf_enforcer::zmq_pubsequence_notification_missing),
-            url("https://github.com/layerTwo-Labs/cusf_enforcer?tab=readme-ov-file#requirements")
+            code(bip360p_enforcer::zmq_pubsequence_notification_missing),
+            url(
+                "https://github.com/layerTwo-Labs/bip360p_enforcer?tab=readme-ov-file#requirements"
+            )
         )]
         struct ZmqNotificationMissing;
 
@@ -725,7 +727,7 @@ where
                 #[error(
                     "Bitcoin Core has no P2P peers connected and refuses to serve block template requests"
                 )]
-                #[diagnostic(code(cusf_enforcer::bitcoin_core_not_connected))]
+                #[diagnostic(code(bip360p_enforcer::bitcoin_core_not_connected))]
                 struct NotConnected;
 
                 return Err(NotConnected.into());
@@ -1059,7 +1061,7 @@ async fn main() -> Result<()> {
         log_dir = %cli.log_dir().display(),
         git_hash = cli.git_hash(),
         build = if cfg!(debug_assertions) { "debug" } else { "release" },
-        "Starting up cusf_enforcer",
+        "Starting up bip360p_enforcer",
     );
     cli::log_effective_config(&arg_matches);
 
@@ -1171,7 +1173,7 @@ async fn main() -> Result<()> {
                 };
                 #[derive(Debug, Diagnostic, Error)]
                 #[error("Invalid Bitcoin Core RPC credentials")]
-                #[diagnostic(code(cusf_enforcer::rpc_credentials))]
+                #[diagnostic(code(bip360p_enforcer::rpc_credentials))]
                 struct UnauthorizedError {
                     #[help]
                     message: String,
@@ -1273,9 +1275,9 @@ async fn main() -> Result<()> {
             )]
             #[diagnostic(
                 help("either run against the L2L signet, or your own custom signet"),
-                code(cusf_enforcer::standard_signet),
+                code(bip360p_enforcer::standard_signet),
                 url(
-                    "https://github.com/layerTwo-Labs/cusf_enforcer?tab=readme-ov-file#requirements"
+                    "https://github.com/layerTwo-Labs/bip360p_enforcer?tab=readme-ov-file#requirements"
                 )
             )]
             struct StandardSignetError;
@@ -1348,7 +1350,7 @@ async fn main() -> Result<()> {
         if !index_info.contains_key("txindex") {
             #[derive(Debug, Diagnostic, Error)]
             #[error("`txindex` is not enabled on the mainchain client")]
-            #[diagnostic(code(cusf_enforcer::txindex_not_enabled))]
+            #[diagnostic(code(bip360p_enforcer::txindex_not_enabled))]
             struct TxindexNotEnabled;
 
             return Err(TxindexNotEnabled.into());

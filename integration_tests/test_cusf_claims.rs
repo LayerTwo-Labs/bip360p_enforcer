@@ -2,7 +2,7 @@
 //! on: `testmempoolaccept` validates a transaction without inserting it into
 //! `mapTx`. If this changes, the enforcer's mempool handling must be revisited.
 
-use cusf_enforcer_lib::bins::CommandExt as _;
+use bip360p_enforcer_lib::bins::CommandExt as _;
 
 use crate::setup::PostSetup;
 

@@ -10,7 +10,7 @@ on:
 env:
   # GHCR image refs must be lowercase, and `github.repository_owner` is
   # `LayerTwo-Labs` — so we hardcode the lowercased name here.
-  IMAGE: ghcr.io/layertwo-labs/cusf_enforcer
+  IMAGE: ghcr.io/layertwo-labs/bip360p_enforcer
 
 jobs:
   # Build and push ALL events. We'll make sure to give the images

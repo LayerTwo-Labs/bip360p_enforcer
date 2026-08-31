@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use bitcoin::BlockHash;
-use cusf_enforcer_lib::{
+use bip360p_enforcer_lib::{
     bins::CommandExt as _,
     proto::mainchain::{BlockHeaderInfo, GetChainTipRequest},
 };
+use bitcoin::BlockHash;
 use tokio::time::sleep;
 
 use crate::setup::PostSetup;

@@ -1,13 +1,24 @@
-# cusf_enforcer — a BIP 360 (P2MR) soft-fork enforcer
+# bip360p_enforcer — a BIP360+ soft-fork enforcer (P2MR + covenant opcodes)
 
 A CUSF ("Core Untouched Soft Fork") enforcer: a sidecar daemon that watches an
-**unmodified** Bitcoin Core node and enforces **BIP 360** Pay-to-Merkle-Root
-(P2MR, SegWit v2) outputs and their post-quantum signature spends. P2MR outputs
-look anyone-can-spend to a stock node, so the enforcer adds the missing
-consensus rule out-of-band: it validates every P2MR spend and calls
+**unmodified** Bitcoin Core node and enforces the **BIP360+** ruleset
+out-of-band — hence the `+`: it does more than plain BIP360. P2MR and the
+covenant opcodes look anyone-can-spend to a stock node, so the enforcer adds the
+missing consensus rules: it validates every relevant spend and calls
 `invalidateblock` on any block containing an invalid one, and keeps invalid
 spends out of the block templates it serves to miners. No patched Bitcoin Core
 is required.
+
+The enforced ruleset:
+
+- **BIP 360** Pay-to-Merkle-Root (P2MR, SegWit v2) outputs and their
+  post-quantum signature spends (four schemes, below).
+- **BIP360+ opcodes** given fail-closed meaning inside standard Taproot v1
+  script-path leaves (they are `OP_SUCCESSx` to stock Core): **OP_CAT**
+  (BIP347), **OP_CHECKTEMPLATEVERIFY** (BIP119), and **OP_VAULT /
+  OP_VAULT_RECOVER** (BIP345) — the last with full Schnorr trigger authorization
+  and BIP112/65 timelocks, so private-key ownership is the sole withdrawal
+  authority.
 
 Four spend schemes are validated inside P2MR tapscript leaves:
 
@@ -154,7 +165,7 @@ Logs can also be configured via env vars, which take precedence over CLI args.
 
 ```bash
 # Prints logs at the "info" level and above, plus our logs the "debug" level and above
-$ RUST_LOG=info,cusf_enforcer_lib=debug cargo run ...
+$ RUST_LOG=info,bip360p_enforcer_lib=debug cargo run ...
 ```
 
 # Working with the proto files

@@ -1,6 +1,6 @@
 use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 
-use cusf_enforcer_lib::{
+use bip360p_enforcer_lib::{
     bins::CommandExt as _,
     proto::mainchain::{CreateNewAddressRequest, GetInfoRequest},
 };

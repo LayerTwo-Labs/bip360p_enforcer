@@ -1,7 +1,9 @@
 use std::time::Duration;
 
+use bip360p_enforcer_lib::{
+    bins::CommandExt as _, proto::mainchain_service::ValidatorServiceClient,
+};
 use connectrpc::client::{ClientConfig, HttpClient};
-use cusf_enforcer_lib::{bins::CommandExt as _, proto::mainchain_service::ValidatorServiceClient};
 use futures::channel::mpsc;
 
 use crate::{
@@ -68,7 +70,7 @@ pub async fn test_file_based_block_parser(setup: PreSetup) -> anyhow::Result<()>
     let () = wait_for_bitcoind_ready(&bitcoin_cli).await?;
 
     let enforcer = Enforcer {
-        path: setup.bin_paths.cusf_enforcer()?.clone(),
+        path: setup.bin_paths.bip360p_enforcer()?.clone(),
         data_dir: setup.directories.enforcer_dir.clone(),
         enable_mempool: false,
         enable_wallet: false,

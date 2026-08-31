@@ -611,7 +611,7 @@ impl BlockHandler<'_> {
                 }
             }
             // Events should only ever be sent after committing DB txs, see
-            // https://github.com/LayerTwo-Labs/cusf_enforcer/pull/185
+            // https://github.com/LayerTwo-Labs/bip360p_enforcer/pull/185
             let _send_err: Result<Option<_>, TrySendError<_>> = event_tx.try_broadcast(event);
         }
 

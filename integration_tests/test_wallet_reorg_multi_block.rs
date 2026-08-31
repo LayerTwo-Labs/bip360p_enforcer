@@ -7,7 +7,7 @@
 //! enforcer's validated tip stuck behind bitcoind's tip, a terminal state
 //! nothing else can sync past.
 
-use cusf_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetBalanceRequest};
+use bip360p_enforcer_lib::{bins::CommandExt as _, proto::mainchain::GetBalanceRequest};
 use futures::channel::mpsc;
 
 use crate::{
@@ -213,7 +213,7 @@ async fn wallet_reorg_scenario(
     // corrupted checkpoint history could report a plausible-looking balance
     // yet still fail real coin selection/signing.
     tracing::info!("confirming the wallet can still build and sign a real transaction");
-    use cusf_enforcer_lib::proto::mainchain::SendTransactionRequest;
+    use bip360p_enforcer_lib::proto::mainchain::SendTransactionRequest;
     let destination = post_setup
         .bitcoin_cli
         .command::<String, _, String, _, _>([], "getnewaddress", [])

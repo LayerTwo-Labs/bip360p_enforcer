@@ -31,7 +31,7 @@ fn parse_host_addr(s: &str) -> Result<SocketAddr, HostAddrError> {
 }
 
 fn get_data_dir() -> Result<PathBuf, String> {
-    const APP_NAME: &str = "cusf_enforcer";
+    const APP_NAME: &str = "bip360p_enforcer";
 
     let dir = match env::consts::OS {
         "linux" => {
@@ -63,11 +63,11 @@ fn get_data_dir() -> Result<PathBuf, String> {
 }
 
 // Sub-par location for the log file.
-// https://github.com/LayerTwo-Labs/cusf_enforcer/issues/133
-const LOG_FILENAME: &str = "cusf_enforcer.log";
+// https://github.com/LayerTwo-Labs/bip360p_enforcer/issues/133
+const LOG_FILENAME: &str = "bip360p_enforcer.log";
 
 // Sub-par location for the log dir.
-// https://github.com/LayerTwo-Labs/cusf_enforcer/issues/133
+// https://github.com/LayerTwo-Labs/bip360p_enforcer/issues/133
 const DEFAULT_LOG_DIRNAME: &str = "logs";
 
 /// Possible formats for log output.
@@ -369,7 +369,7 @@ fn get_long_version() -> clap::builder::Str {
     format!(
         "v{}
  commit: {}
- binary: cusf_enforcer",
+ binary: bip360p_enforcer",
         env!("CARGO_PKG_VERSION"),
         env!("GIT_HASH"),
     )
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn the_dump_masks_secrets_and_nothing_else() {
         let matches = Config::command().get_matches_from([
-            "cusf_enforcer",
+            "bip360p_enforcer",
             "--node-rpc-user=alice",
             "--node-rpc-pass=hunter2",
             "--wallet-esplora-url=https://bob:s3kr1t@esplora.example/api",
@@ -808,7 +808,7 @@ mod tests {
     /// the point of reporting the value source.
     #[test]
     fn value_sources_distinguish_default_from_unset() {
-        let matches = Config::command().get_matches_from(["cusf_enforcer"]);
+        let matches = Config::command().get_matches_from(["bip360p_enforcer"]);
 
         assert_eq!(
             matches.value_source("sync_source"),
@@ -830,7 +830,7 @@ mod tests {
     /// Booleans reach the dump as raw values too, rather than vanishing.
     #[test]
     fn boolean_flags_have_raw_values() {
-        let matches = Config::command().get_matches_from(["cusf_enforcer", "--enable-wallet"]);
+        let matches = Config::command().get_matches_from(["bip360p_enforcer", "--enable-wallet"]);
         let raw: Vec<_> = matches
             .try_get_raw("enable_wallet")
             .unwrap()
@@ -845,7 +845,7 @@ mod tests {
     #[test]
     fn dumping_the_config_does_not_panic() {
         let matches = Config::command().get_matches_from([
-            "cusf_enforcer",
+            "bip360p_enforcer",
             "--node-rpc-pass=hunter2",
             "--node-rpc-user=alice",
             "--enable-wallet",

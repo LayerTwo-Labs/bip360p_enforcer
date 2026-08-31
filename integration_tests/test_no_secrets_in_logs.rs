@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use cusf_enforcer_lib::cli::SecretString;
+use bip360p_enforcer_lib::cli::SecretString;
 
 use crate::{integration_test::fund_enforcer, setup::PostSetup};
 

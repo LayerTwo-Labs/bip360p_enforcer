@@ -171,7 +171,7 @@ async fn fund_vaults(post_setup: &mut PostSetup, heights: &[u32]) -> anyhow::Res
 
 /// Mine `n` blocks directly via bitcoind to the harness mining address.
 async fn generate_blocks(post_setup: &mut PostSetup, n: u32) -> anyhow::Result<()> {
-    use cusf_enforcer_lib::bins::CommandExt as _;
+    use bip360p_enforcer_lib::bins::CommandExt as _;
     let address = post_setup.mining_address.to_string();
     post_setup
         .bitcoin_cli

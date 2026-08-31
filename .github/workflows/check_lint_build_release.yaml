@@ -119,13 +119,13 @@ jobs:
         run: cargo check --workspace --all-targets
 
       - name: Unit tests
-        run: cargo test -p cusf_enforcer_lib
+        run: cargo test -p bip360p_enforcer_lib
 
       - name: Clippy (lib)
-        run: cargo clippy -p cusf_enforcer_lib -- -D warnings
+        run: cargo clippy -p bip360p_enforcer_lib -- -D warnings
 
       - name: Clippy (integration_tests)
-        run: cargo clippy -p cusf_enforcer_integration_tests -- -D warnings
+        run: cargo clippy -p bip360p_enforcer_integration_tests -- -D warnings
 
       - name: Check integration_tests example
         run: cargo check --example integration_tests
@@ -305,12 +305,12 @@ jobs:
         run: |
           export PATH="$HOME/grpcurl-bin:$PATH"
           export BITCOIND='../bitcoin-bins/bitcoind'
-          export CUSF_ENFORCER='target/debug/cusf_enforcer'
+          export BIP360P_ENFORCER='target/debug/bip360p_enforcer'
           just verify-reflection
 
       - name: Run integration tests
         run: |
-          export CUSF_ENFORCER='target/debug/cusf_enforcer'
+          export BIP360P_ENFORCER='target/debug/bip360p_enforcer'
           export BITCOIND='../bitcoin-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-bins/bitcoin-cli'
           export BITCOIN_UTIL='../bitcoin-bins/bitcoin-util'
@@ -400,7 +400,7 @@ jobs:
         run: |
           # We still capture the version, but won't use it in the final binary name
           APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "cusf_enforcer") | .version) | .[0]')
+            jq -er '.packages | map(select(.name == "bip360p_enforcer") | .version) | .[0]')
           # Use 'latest' in the filename instead of the version
           APP_DIRNAME="cusf-enforcer-latest-${{ matrix.name }}"
           APP_FILENAME="${APP_DIRNAME}${{ matrix.binary-suffix }}"
@@ -410,7 +410,7 @@ jobs:
 
       - run: |
           mkdir release
-          cp target/${{ matrix.name }}/release/cusf_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
+          cp target/${{ matrix.name }}/release/bip360p_enforcer${{ matrix.binary-suffix }} release/${{ env.APP_FILENAME }}
 
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v7

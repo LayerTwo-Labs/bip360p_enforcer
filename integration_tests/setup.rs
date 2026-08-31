@@ -9,18 +9,18 @@ use std::{
 };
 
 use anyhow::anyhow;
-use bitcoin::Address;
-use connectrpc::{
-    client::{ClientConfig, HttpClient},
-    error::ErrorCode,
-};
-use cusf_enforcer_lib::{
+use bip360p_enforcer_lib::{
     bins::{self, CommandExt as _},
     proto::{
         self,
         mainchain::GetChainTipRequest,
         mainchain_service::{MiningServiceClient, ValidatorServiceClient, WalletServiceClient},
     },
+};
+use bitcoin::Address;
+use connectrpc::{
+    client::{ClientConfig, HttpClient},
+    error::ErrorCode,
 };
 use futures::channel::mpsc;
 use reserve_port::ReservedPort;
@@ -70,7 +70,7 @@ impl SignetSetup {
             .into_script();
         let signet_challenge_addr =
             bitcoin::Address::from_script(&cpk.p2wpkh_script_code(), &bitcoin::params::SIGNET)?;
-        let signet_magic = cusf_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
+        let signet_magic = bip360p_enforcer_lib::p2p::compute_signet_magic(&signet_challenge);
         tracing::info!(
             signet_challenge = %hex::encode(signet_challenge.as_bytes()),
             %signet_magic,
@@ -705,9 +705,9 @@ impl PostSetup {
             tracing::debug!("Skipping electrs (validator-only enforcer)");
             (0, 0, tokio::spawn(async {}).into())
         };
-        tracing::debug!("Starting cusf_enforcer");
+        tracing::debug!("Starting bip360p_enforcer");
         let enforcer = Enforcer {
-            path: bin_paths.cusf_enforcer()?.clone(),
+            path: bin_paths.bip360p_enforcer()?.clone(),
             data_dir: dirs.enforcer_dir.clone(),
             enable_mempool: mode.enable_mempool(),
             enable_wallet,
@@ -823,7 +823,7 @@ impl PostSetup {
         self.kill_enforcer().await?;
 
         let enforcer = Enforcer {
-            path: bin_paths.cusf_enforcer()?.clone(),
+            path: bin_paths.bip360p_enforcer()?.clone(),
             data_dir: self.directories.enforcer_dir.clone(),
             enable_mempool: self.mode.enable_mempool(),
             enable_wallet: true,

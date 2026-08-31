@@ -97,7 +97,7 @@ sequence, and calls the enforcer's `CusfEnforcer` implementation:
 | `sync_to_tip`      | Catch up to chain tip                                                   |
 
 In `bip300301_enforcer`, `Validator` implements `CusfEnforcer` in
-`lib/validator/cusf_enforcer.rs`. With `bip360` enabled, `accept_tx` routes
+`lib/validator/bip360p_enforcer.rs`. With `bip360` enabled, `accept_tx` routes
 through `BlockHandler::validate_tx` → `pqc::validate_mempool_transaction`.
 
 ### What `accept_tx` enforces today (BIP 360)
@@ -158,7 +158,7 @@ integration trial (`Mode::GetBlockTemplate`).
 
 - Mempool crate:
   [`cusf-enforcer-mempool`](https://github.com/LayerTwo-Labs/cusf-enforcer-mempool)
-- Enforcer trait impl: `lib/validator/cusf_enforcer.rs`
+- Enforcer trait impl: `lib/validator/bip360p_enforcer.rs`
 - PQC mempool hook: `lib/validator/task/mod.rs` (`validate_mempool_transaction`)
 - Design overview: [`cusf/DESIGN.md`](../../DESIGN.md)
 - Core 31 ZMQ inventory + spend-path limits:

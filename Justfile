@@ -5,8 +5,8 @@
 # over growing new long recipes here.
 import? 'local.just'
 
-env_file := env_var_or_default('CUSF_ENFORCER_INTEGRATION_TEST_ENV', 'integrationtests.env')
-enforcer_bin := env_var_or_default('CUSF_ENFORCER', 'target/debug/cusf_enforcer')
+env_file := env_var_or_default('BIP360P_ENFORCER_INTEGRATION_TEST_ENV', 'integrationtests.env')
+enforcer_bin := env_var_or_default('BIP360P_ENFORCER', 'target/debug/bip360p_enforcer')
 
 default:
     @just --list
@@ -156,7 +156,7 @@ build *args='':
     cargo build {{ args }}
 
 # --- Hub + rule workers (docs/MULTI_ENFORCER.md) ---
-# Hub: cusf_enforcer (Local feature ballots + optional --rules-worker UDS remotes on hot path).
+# Hub: bip360p_enforcer (Local feature ballots + optional --rules-worker UDS remotes on hot path).
 
 # Apply rustfmt (nightly) across the workspace.
 fmt:
@@ -178,11 +178,11 @@ fmt:
 
 # All cargo unit tests (no bitcoind trials).
 test-unit:
-    cargo test -p cusf_enforcer_lib
+    cargo test -p bip360p_enforcer_lib
 
 # P2MR / PQC validation unit tests only.
 test-pqc:
-    cargo test -p cusf_enforcer_lib pqc::
+    cargo test -p bip360p_enforcer_lib pqc::
 
 check-integration-build:
     cargo check --example integration_tests
@@ -234,7 +234,7 @@ setup-core:
     fi
     ENV_FILE="$REPO_ROOT/integrationtests.env"
     {
-        echo "CUSF_ENFORCER='target/debug/cusf_enforcer'"
+        echo "BIP360P_ENFORCER='target/debug/bip360p_enforcer'"
         echo "BITCOIND_UNPATCHED='$UNPATCHED_DIR/bitcoind'"
         echo "BITCOIN_CLI='$UNPATCHED_DIR/bitcoin-cli'"
         echo "BITCOIN_UTIL='$UNPATCHED_DIR/bitcoin-util'"
@@ -299,8 +299,8 @@ _run-it trial auto_setup='':
         echo "==> building enforcer binaries"
         just build
     fi
-    export CUSF_ENFORCER_INTEGRATION_TEST_ENV="$ENV_FILE"
-    export CUSF_ENFORCER="$ENFORCER"
+    export BIP360P_ENFORCER_INTEGRATION_TEST_ENV="$ENV_FILE"
+    export BIP360P_ENFORCER="$ENFORCER"
     if [ -n "${BITCOIND_UNPATCHED:-}" ] && [ -x "${BITCOIND_UNPATCHED}" ]; then
         export BITCOIND="${BITCOIND_UNPATCHED}"
         export BITCOIN_CLI="$(dirname "$BITCOIND_UNPATCHED")/bitcoin-cli"
@@ -429,10 +429,10 @@ cusf-claims auto='':
         source "$ENV_FILE"
         set +a
     fi
-    cargo build -p cusf_enforcer
+    cargo build -p bip360p_enforcer
     cargo build --example integration_tests
-    export CUSF_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
-    export CUSF_ENFORCER="{{enforcer_bin}}"
+    export BIP360P_ENFORCER_INTEGRATION_TEST_ENV="{{env_file}}"
+    export BIP360P_ENFORCER="{{enforcer_bin}}"
     export TEMPLATE_SKIP_REBUILD=1
     just _run-it cusf_claim_testmempoolaccept_no_insert "{{auto}}"
     just _run-it cusf_claim_stock_rejects_p2mr_spend "{{auto}}"

@@ -1,4 +1,4 @@
-use cusf_enforcer_lib::{
+use bip360p_enforcer_lib::{
     bins::CommandExt as _,
     proto::{self, mainchain::GenerateToAddressRequest},
 };
@@ -15,7 +15,9 @@ pub async fn test_generate_to_address(setup: PreSetup) -> anyhow::Result<()> {
 
     let post_setup = setup.setup(Mode::NoMempool, setup_opts, res_tx).await?;
 
-    async fn block_count(bitcoin_cli: &cusf_enforcer_lib::bins::BitcoinCli) -> anyhow::Result<u64> {
+    async fn block_count(
+        bitcoin_cli: &bip360p_enforcer_lib::bins::BitcoinCli,
+    ) -> anyhow::Result<u64> {
         let count = bitcoin_cli
             .command::<String, _, String, _, _>([], "getblockcount", [])
             .run_utf8()

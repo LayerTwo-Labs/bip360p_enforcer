@@ -213,7 +213,7 @@ pub struct BinPaths {
     bitcoind_unpatched: OnceLock<PathBuf>,
     bitcoin_cli: OnceLock<PathBuf>,
     bitcoin_util: OnceLock<PathBuf>,
-    cusf_enforcer: OnceLock<PathBuf>,
+    bip360p_enforcer: OnceLock<PathBuf>,
     electrs: OnceLock<PathBuf>,
     signet_miner: OnceLock<PathBuf>,
 }
@@ -240,9 +240,9 @@ impl BinPaths {
         self.bitcoin_util.get_or_try_init_from_env("BITCOIN_UTIL")
     }
 
-    pub fn cusf_enforcer(&self) -> Result<&PathBuf, VarError> {
-        self.cusf_enforcer
-            .get_or_try_init_from_env_or("CUSF_ENFORCER", "./target/debug/cusf_enforcer")
+    pub fn bip360p_enforcer(&self) -> Result<&PathBuf, VarError> {
+        self.bip360p_enforcer
+            .get_or_try_init_from_env_or("BIP360P_ENFORCER", "./target/debug/bip360p_enforcer")
     }
 
     pub fn electrs(&self) -> Result<&PathBuf, VarError> {
@@ -720,12 +720,12 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
-    pub fn new_bitcoin_cli(&self, path: PathBuf) -> cusf_enforcer_lib::bins::BitcoinCli {
-        cusf_enforcer_lib::bins::BitcoinCli {
+    pub fn new_bitcoin_cli(&self, path: PathBuf) -> bip360p_enforcer_lib::bins::BitcoinCli {
+        bip360p_enforcer_lib::bins::BitcoinCli {
             path,
             network: self.network,
             rpc_user: Some(self.rpc_user.clone()),
-            rpc_pass: Some(cusf_enforcer_lib::cli::SecretString::new(
+            rpc_pass: Some(bip360p_enforcer_lib::cli::SecretString::new(
                 self.rpc_pass.clone(),
             )),
             rpc_cookie_path: None,

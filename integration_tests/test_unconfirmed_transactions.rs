@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cusf_enforcer_lib::proto::mainchain::{
+use bip360p_enforcer_lib::proto::mainchain::{
     ListTransactionsRequest, ListUnspentOutputsRequest, SendTransactionRequest,
 };
 

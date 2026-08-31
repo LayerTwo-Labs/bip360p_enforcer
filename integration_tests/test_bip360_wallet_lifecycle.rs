@@ -19,8 +19,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use bitcoin::{BlockHash, Txid};
-use cusf_enforcer_lib::{
+use bip360p_enforcer_lib::{
     bins::CommandExt as _,
     proto::{
         mainchain::{
@@ -31,6 +30,7 @@ use cusf_enforcer_lib::{
         wrap_u64,
     },
 };
+use bitcoin::{BlockHash, Txid};
 
 use crate::{
     block_verdict::{Expect, assert_enforcer_verdict},

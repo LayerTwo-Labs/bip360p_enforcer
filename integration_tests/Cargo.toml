@@ -1,5 +1,5 @@
 [package]
-name = "cusf_enforcer_integration_tests"
+name = "bip360p_enforcer_integration_tests"
 authors.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -8,7 +8,7 @@ version.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 bdk_wallet = { workspace = true }
-cusf_enforcer_lib = { path = "../lib", default-features = false }
+bip360p_enforcer_lib = { path = "../lib", default-features = false }
 bitcoin-jsonrpsee = { workspace = true }
 bitcoin = { workspace = true }
 cfg-if = { workspace = true }
@@ -39,15 +39,15 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = ["rustls"]
-openssl = ["cusf_enforcer_lib/openssl"]
-rustls = ["cusf_enforcer_lib/rustls"]
-rustls-ring = ["cusf_enforcer_lib/rustls-ring"]
+openssl = ["bip360p_enforcer_lib/openssl"]
+rustls = ["bip360p_enforcer_lib/rustls"]
+rustls-ring = ["bip360p_enforcer_lib/rustls-ring"]
 
 [lints]
 workspace = true
 
 [lib]
-name = "cusf_enforcer_integration_tests"
+name = "bip360p_enforcer_integration_tests"
 path = "lib.rs"
 test = false
 doctest = false

@@ -34,10 +34,10 @@ RUN GRPC_HEALTH_PROBE_VERSION=v0.4.37 && \
     curl -fsSL https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH} -o /bin/grpc_health_probe && \
     chmod +x /bin/grpc_health_probe
 
-COPY --from=builder /workspace/target/release/cusf_enforcer /bin/
+COPY --from=builder /workspace/target/release/bip360p_enforcer /bin/
 
 # Verify we placed the binary in the right place,
 # and that it's executable.
-RUN cusf_enforcer --help
+RUN bip360p_enforcer --help
 
-ENTRYPOINT ["cusf_enforcer"]
+ENTRYPOINT ["bip360p_enforcer"]
