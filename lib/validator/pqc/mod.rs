@@ -64,9 +64,15 @@ pub fn validate_transaction(
         source,
     })?;
 
-    // BIP360+ Tapscript opcodes (OP_CAT, …) in standard Taproot v1 leaves —
-    // decoupled from P2MR, same activation gate (already checked above).
-    crate::validator::tapscript::enforce_transaction(tx).map_err(|source| {
+    // BIP360+ Tapscript opcodes (OP_CAT, CTV, OP_VAULT, …) in standard Taproot
+    // v1 leaves — decoupled from P2MR, same activation gate (already checked
+    // above). `available_prevouts` (chain P2MR + same-block outputs + prefetched
+    // external prevouts) supplies input amounts + scriptPubKeys for OP_VAULT and
+    // the BIP341 signature sighash; opcodes needing an unresolved prevout fail
+    // closed. At mempool admission this map is empty, so a vault/signature spend
+    // fails closed there and enters via the block-producer suffix path (like
+    // P2MR/OP_CAT); block-connect is the authoritative validator.
+    crate::validator::tapscript::enforce_transaction(tx, available_prevouts).map_err(|source| {
         PqcValidationError::Tapscript {
             txid: tx.compute_txid(),
             source,

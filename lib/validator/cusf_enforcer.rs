@@ -307,17 +307,16 @@ impl<'validator> ConnectBlockMode<'validator> for ConnectBlockCommit {
 impl Validator {
     /// Fetch, from bitcoind, prevouts that the synchronous block-connect path
     /// cannot resolve from the indexed P2MR UTXO set or this block's own
-    /// outputs: a multi-input P2MR spend's non-P2MR co-input from a prior
-    /// block, and (from Phase 6b) Taproot-v1 vault inputs whose amount the
-    /// value-preservation checks require. Returns an empty map when the block
-    /// contains no such spend, or best-effort partial results on RPC failure —
-    /// the downstream checks fail closed on anything left unresolved.
+    /// outputs: a multi-input P2MR spend's non-P2MR co-input from a prior block,
+    /// and every input of a Taproot-v1 vault (OP_VAULT / OP_VAULT_RECOVER) spend
+    /// — whose amounts, scriptPubKeys, and the committing trigger-auth sighash
+    /// the value-preservation and signature checks require. Returns an empty map
+    /// when the block contains no such spend, or best-effort partial results on
+    /// RPC failure — the downstream checks fail closed on anything unresolved.
     async fn prefetch_external_prevouts(&self, block: &Block) -> HashMap<OutPoint, TxOut> {
-        // Identify prevouts the sync path cannot resolve. Today: a multi-input
-        // P2MR spend's co-input whose prevout is neither a tracked P2MR output
-        // nor created earlier in this block — required to build the committing
-        // `Prevouts::All` sighash. (Phase 6b extends this to Taproot-v1 vault
-        // inputs, whose amount the value-preservation checks need.)
+        // Identify prevouts the sync path cannot resolve: a multi-input P2MR
+        // spend's co-input, or any input of a vault-spending tx, whose prevout is
+        // neither a tracked P2MR output nor created earlier in this block.
         let chain_p2mr = match self.p2mr_utxos() {
             Ok(map) => map,
             // Can't classify without the P2MR set; downstream fails closed.
@@ -334,14 +333,23 @@ impl Validator {
 
         let mut wanted: HashSet<OutPoint> = HashSet::new();
         for tx in block.txdata.iter().skip(1) {
-            if tx.input.len() < 2 {
-                continue; // single-input spends need only their own prevout
-            }
-            let spends_p2mr = tx
+            // A vault spend (OP_VAULT / OP_VAULT_RECOVER) needs its own
+            // prior-block Taproot prevout (amount + scriptPubKey for the value
+            // and revault checks) and — for the committing trigger-auth BIP341
+            // sighash — every co-input's prevout too, so fetch all of them
+            // regardless of input count.
+            let has_vault_input = tx
                 .input
                 .iter()
-                .any(|input| chain_p2mr.contains_key(&input.previous_output));
-            if !spends_p2mr {
+                .any(|input| crate::validator::tapscript::input_reveals_vault_leaf(&input.witness));
+            // A multi-input P2MR spend needs its non-P2MR co-inputs for the
+            // committing `Prevouts::All` sighash.
+            let multi_input_p2mr = tx.input.len() >= 2
+                && tx
+                    .input
+                    .iter()
+                    .any(|input| chain_p2mr.contains_key(&input.previous_output));
+            if !has_vault_input && !multi_input_p2mr {
                 continue;
             }
             for input in &tx.input {
