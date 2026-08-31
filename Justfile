@@ -257,6 +257,7 @@ it-all auto='':
     trials=(
         bip360_wallet_lifecycle
         bip360_enforcement
+        bip360_vault_enforcement
         cusf_claim_testmempoolaccept_no_insert
         "unconfirmed_transactions (mode: Mempool, network: Regtest)"
         file_based_block_parser

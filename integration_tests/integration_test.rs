@@ -416,5 +416,20 @@ pub fn tests(
         crate::test_bip360_enforcement::test_bip360_enforcement,
     ));
 
+    // Vault enforcement: OP_VAULT/OP_VAULT_RECOVER covenant on a live chain — a
+    // correct trigger and recovery accept; a forged signature and a mismatching
+    // trigger-output taptree are rejected (invalidateblock). Validator-only.
+    async_trials.push(new_trial(
+        "bip360_vault_enforcement".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_bip360_vault_enforcement::test_bip360_vault_enforcement,
+    ));
+
     async_trials
 }
