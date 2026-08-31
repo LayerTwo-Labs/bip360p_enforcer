@@ -43,7 +43,7 @@ use crate::{
     },
 };
 
-mod cusf_block_producer;
+mod block_producer;
 pub mod error;
 pub mod mnemonic;
 pub mod p2mr_store;

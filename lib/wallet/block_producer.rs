@@ -205,7 +205,7 @@ async fn sync_wallet_to_tip(
 
 impl CusfEnforcer for Wallet {
     type SyncError = error::InitialSync;
-    type InvalidBlockReason = crate::validator::cusf_enforcer::InvalidBlockReason;
+    type InvalidBlockReason = crate::validator::enforcer::InvalidBlockReason;
 
     #[instrument(skip_all, fields(tip_hash))]
     // TODO: this is confusing. This function is called multiple times? I want an easy
@@ -225,10 +225,10 @@ impl CusfEnforcer for Wallet {
         // Other's validator SyncError converts into our InitialSync.
         fn map_val_err(
             err: SyncToTipError<
-                crate::validator::cusf_enforcer::InvalidBlockReason,
-                crate::validator::cusf_enforcer::SyncError,
+                crate::validator::enforcer::InvalidBlockReason,
+                crate::validator::enforcer::SyncError,
             >,
-        ) -> SyncToTipError<crate::validator::cusf_enforcer::InvalidBlockReason, error::InitialSync>
+        ) -> SyncToTipError<crate::validator::enforcer::InvalidBlockReason, error::InitialSync>
         {
             match err {
                 SyncToTipError::InvalidBlock { block_hash, reason } => {
@@ -286,7 +286,7 @@ impl CusfEnforcer for Wallet {
         }
     }
 
-    type ValidateBlockError = crate::validator::cusf_enforcer::ValidateBlockError;
+    type ValidateBlockError = crate::validator::enforcer::ValidateBlockError;
 
     fn validate_block(
         &self,
