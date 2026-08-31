@@ -1067,14 +1067,37 @@ impl Wallet {
             keychain_descriptors.insert(kind, w.public_descriptor(kind).clone());
         }
 
-        let tip = w.local_chain().tip();
+        let bdk_tip = w.local_chain().tip();
+
+        // `ListP2mrOutputs` is backed by the validator's `p2mr_utxos`, committed
+        // atomically with the validator's block tip (`current_chain_tip`). The
+        // BDK wallet tip can run ahead of that — its sync target is derived from
+        // the validator's header DB, which advances before block processing
+        // commits `p2mr_utxos`. Report the lagging of the two heights so a client
+        // that waits for `tip.height >= H` (e.g. `wait_for_wallet_sync`) is
+        // guaranteed both the BDK UTXO set and the P2MR UTXO set are current
+        // through H. On a validator read error, fall back to the BDK tip.
+        let validator_height = self.inner.validator().try_get_block_height().ok().flatten();
+        let tip = match validator_height {
+            Some(validator_height) if validator_height < bdk_tip.height() => {
+                let hash = self
+                    .inner
+                    .validator()
+                    .try_get_mainchain_tip()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| bdk_tip.hash());
+                (hash, validator_height)
+            }
+            _ => (bdk_tip.hash(), bdk_tip.height()),
+        };
 
         Ok(WalletInfo {
             keychain_descriptors,
             network: w.network(),
             transaction_count: w.transactions().count(),
             unspent_output_count: w.list_unspent().count(),
-            tip: (tip.hash(), tip.height()),
+            tip,
         })
     }
 
