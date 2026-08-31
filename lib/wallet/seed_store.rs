@@ -169,7 +169,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cusf-enforcer-seed-store-{tag}-{}-{:?}",
+            "bip360p-enforcer-seed-store-{tag}-{}-{:?}",
             std::process::id(),
             std::thread::current().id(),
         ));

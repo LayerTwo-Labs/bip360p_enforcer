@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - master
+    tags:
+      - "v*"
   workflow_dispatch:
 
 env:
@@ -402,7 +404,7 @@ jobs:
           APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "bip360p_enforcer") | .version) | .[0]')
           # Use 'latest' in the filename instead of the version
-          APP_DIRNAME="cusf-enforcer-latest-${{ matrix.name }}"
+          APP_DIRNAME="bip360p-enforcer-latest-${{ matrix.name }}"
           APP_FILENAME="${APP_DIRNAME}${{ matrix.binary-suffix }}"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "APP_FILENAME=$APP_FILENAME" >> "$GITHUB_ENV"
