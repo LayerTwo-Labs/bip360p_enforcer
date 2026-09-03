@@ -19,10 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check Prettier formatting
-        uses: actionsx/prettier@v3
+      - uses: actions/setup-node@v4
         with:
-          args: --check .
+          node-version: 20
+
+      - name: Check Prettier formatting
+        run: npx --yes prettier@3.5.3 --check .
 
   check-generated-proto:
     name: Check Generated Proto
